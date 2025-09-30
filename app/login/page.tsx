@@ -19,7 +19,7 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [isTestingConnection, setIsTestingConnection] = useState(false)
-  const [showLocaltunnelHelp, setShowLocaltunnelHelp] = useState(false)
+  const [showCorsHelp, setShowCorsHelp] = useState(false)
   const router = useRouter()
   const { toast } = useToast()
 
@@ -32,18 +32,12 @@ export default function LoginPage() {
           title: "Conexión exitosa",
           description: result.message || "El servidor está disponible",
         })
-        setShowLocaltunnelHelp(false)
+        setShowCorsHelp(false)
       } else {
-        if (result.error === "localtunnel_authorization_required") {
-          toast({
-            title: "Autorización de localtunnel requerida",
-            description: "Debes autorizar el dominio localtunnel. Haz clic en 'Abrir Servidor'.",
-            variant: "destructive",
-          })
-        } else if (result.error === "localtunnel_connection_failed") {
+        if (result.error === "connection_failed") {
           toast({
             title: "Error de conexión",
-            description: "No se puede conectar con localtunnel. Verifica que esté ejecutándose.",
+            description: "No se puede conectar con el servidor backend. Verifica que esté en línea.",
             variant: "destructive",
           })
         } else {
@@ -53,7 +47,7 @@ export default function LoginPage() {
             variant: "destructive",
           })
         }
-        setShowLocaltunnelHelp(true)
+        setShowCorsHelp(true)
       }
     } catch (error) {
       toast({
@@ -61,7 +55,7 @@ export default function LoginPage() {
         description: "No se pudo probar la conexión",
         variant: "destructive",
       })
-      setShowLocaltunnelHelp(true)
+      setShowCorsHelp(true)
     }
     setIsTestingConnection(false)
   }
@@ -83,32 +77,20 @@ export default function LoginPage() {
       } else {
         const errorMessage = result.error || "Usuario o contraseña incorrectos"
 
-        if (errorMessage === "localtunnel_authorization_required") {
+        if (errorMessage === "cors_error" || errorMessage === "connection_failed") {
           toast({
-            title: "Autorización de localtunnel requerida",
+            title: "Error de conexión con el servidor",
             description:
-              "Debes autorizar el dominio localtunnel primero. Haz clic en 'Abrir Servidor' y autoriza el sitio.",
+              "No se puede conectar con el backend. Esto puede ser un problema de CORS o el servidor no está disponible.",
             variant: "destructive",
           })
-          setShowLocaltunnelHelp(true)
-        } else if (errorMessage === "localtunnel_connection_failed") {
-          toast({
-            title: "Error de conexión con localtunnel",
-            description: "No se puede conectar con el servidor. Verifica que localtunnel esté ejecutándose.",
-            variant: "destructive",
-          })
-          setShowLocaltunnelHelp(true)
+          setShowCorsHelp(true)
         } else {
           toast({
             title: "Error de autenticación",
             description: errorMessage,
             variant: "destructive",
           })
-
-          // Show localtunnel help if it's a connection error
-          if (errorMessage.includes("localtunnel") || errorMessage.includes("conectar")) {
-            setShowLocaltunnelHelp(true)
-          }
         }
       }
     } catch (error) {
@@ -117,7 +99,7 @@ export default function LoginPage() {
         description: "No se pudo conectar con el servidor",
         variant: "destructive",
       })
-      setShowLocaltunnelHelp(true)
+      setShowCorsHelp(true)
     }
 
     setIsLoading(false)
@@ -136,21 +118,25 @@ export default function LoginPage() {
           <CardDescription>Ingrese sus credenciales para acceder al sistema de administración</CardDescription>
         </CardHeader>
         <CardContent>
-          {showLocaltunnelHelp && (
+          {showCorsHelp && (
             <Alert className="mb-4">
               <AlertCircle className="h-4 w-4" />
               <AlertDescription>
                 <div className="space-y-2">
-                  <p className="font-medium">Problema de conexión con localtunnel</p>
-                  <p className="text-sm">Para resolver este problema:</p>
+                  <p className="font-medium">Problema de conexión con el servidor</p>
+                  <p className="text-sm">Posibles causas:</p>
                   <ol className="text-sm list-decimal list-inside space-y-1">
-                    <li>Haz clic en el botón "Abrir servidor" abajo</li>
-                    <li>En la página que se abre, ingresa la contraseña del túnel si te la pide</li>
-                    <li>Autoriza el dominio localtunnel cuando te lo solicite</li>
-                    <li>Regresa aquí e intenta hacer login nuevamente</li>
+                    <li>El backend en Render no está en línea o está iniciando (puede tardar hasta 1 minuto)</li>
+                    <li>
+                      El backend necesita configurar CORS para permitir requests desde este dominio (v0.dev o v0.app)
+                    </li>
+                    <li>Hay un problema de red o firewall bloqueando la conexión</li>
                   </ol>
                   <p className="text-xs text-muted-foreground mt-2">
-                    Nota: localtunnel requiere autorización del navegador para permitir requests desde aplicaciones web.
+                    Backend URL: https://propertyhub-backend.onrender.com
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Intenta hacer clic en "Abrir Servidor" para verificar que el backend esté en línea.
                   </p>
                 </div>
               </AlertDescription>
@@ -214,7 +200,7 @@ export default function LoginPage() {
                 variant="outline"
                 size="sm"
                 className="flex-1 bg-transparent"
-                onClick={() => window.open("https://yellow-impalas-play.loca.lt/api/auth/login/", "_blank")}
+                onClick={() => window.open("https://propertyhub-backend.onrender.com/api/auth/login/", "_blank")}
               >
                 <ExternalLink className="h-4 w-4 mr-1" />
                 Abrir Servidor

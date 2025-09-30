@@ -131,9 +131,6 @@ export const authService = {
   // Login
   login: async (credentials: LoginCredentials): Promise<ApiResponse<AuthResponse>> => {
     try {
-      console.log("[v0] Attempting login with credentials:", { username: credentials.username })
-      console.log("[v0] API URL:", `${API_BASE_URL}/api/auth/login/`)
-
       const requestOptions = {
         method: "POST",
         headers: {
@@ -143,18 +140,11 @@ export const authService = {
         body: JSON.stringify(credentials),
       }
 
-      console.log("[v0] Request options:", requestOptions)
-
       const response = await fetch(`${API_BASE_URL}/api/auth/login/`, requestOptions)
-
-      console.log("[v0] Login response status:", response.status)
-      console.log("[v0] Login response headers:", Object.fromEntries(response.headers.entries()))
 
       const responseText = await response.text()
 
       if (!response.ok) {
-        console.log("[v0] Error response text:", responseText)
-
         try {
           const errorData = JSON.parse(responseText)
           return {
@@ -179,8 +169,6 @@ export const authService = {
         }
       }
 
-      console.log("[v0] Login response data:", data)
-
       if (data.access_token) {
         // Store tokens and user data
         tokenManager.setTokens(data.access_token, data.refresh_token)
@@ -202,14 +190,11 @@ export const authService = {
       }
     } catch (error) {
       console.error("[v0] Login error:", error)
-      console.log("[v0] Error type:", error.constructor.name)
-      console.log("[v0] Error message:", error.message)
 
       if (error instanceof TypeError && error.message.includes("fetch")) {
-        console.log("[v0] Network/CORS error detected")
         return {
           success: false,
-          error: "connection_failed",
+          error: "cors_error",
         }
       }
 
@@ -223,14 +208,10 @@ export const authService = {
   // Logout
   logout: async (): Promise<ApiResponse<void>> => {
     try {
-      console.log("[v0] Attempting logout")
-
       const response = await fetch(`${API_BASE_URL}/api/auth/logout/`, {
         method: "POST",
         headers: tokenManager.getAuthHeaders(),
       })
-
-      console.log("[v0] Logout response status:", response.status)
 
       // Clear tokens regardless of response
       tokenManager.clearTokens()
@@ -239,7 +220,6 @@ export const authService = {
         return { success: true }
       } else {
         const errorText = await response.text()
-        console.log("[v0] Logout error response:", errorText)
         return {
           success: false,
           error: "Error al cerrar sesión",

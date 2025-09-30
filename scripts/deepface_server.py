@@ -111,8 +111,7 @@ def recognize_face():
                 # Convertir distancia a confianza (menor distancia = mayor confianza)
                 confidence = max(0, 1 - distance)
                 
-                # Umbral de confianza (ajustable)
-                confidence_threshold = 0.6
+                confidence_threshold = 0.45
                 
                 if confidence >= confidence_threshold:
                     return jsonify({

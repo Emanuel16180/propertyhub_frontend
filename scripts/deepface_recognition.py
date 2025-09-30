@@ -14,7 +14,7 @@ class FaceRecognitionSystem:
         self.model_name = "ArcFace"  # Modelo más preciso
         self.detector_backend = "mtcnn"  # Detector más robusto
         self.distance_metric = "euclidean"
-        self.threshold = 0.68  # Umbral para ArcFace con euclidean
+        self.threshold = 0.80
         
         # Crear directorio de base de datos si no existe
         os.makedirs(self.db_path, exist_ok=True)

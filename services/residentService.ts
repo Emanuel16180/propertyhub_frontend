@@ -98,7 +98,9 @@ export const residentService = {
               house_identifier: resident.resident_details?.house_identifier || "",
               emergency_contact: resident.resident_details?.emergency_contact || "",
               face_photo: resident.resident_details?.face_photo
-                ? `${API_BASE_URL}${resident.resident_details.face_photo}`
+                ? resident.resident_details.face_photo.startsWith("http")
+                  ? resident.resident_details.face_photo
+                  : `${API_BASE_URL}${resident.resident_details.face_photo}`
                 : undefined,
             },
           },
@@ -356,7 +358,9 @@ export const residentService = {
             house_identifier: resident.resident_details?.house_identifier || "",
             emergency_contact: resident.resident_details?.emergency_contact || "",
             face_photo: resident.resident_details?.face_photo
-              ? `${API_BASE_URL}${resident.resident_details.face_photo}`
+              ? resident.resident_details.face_photo.startsWith("http")
+                ? resident.resident_details.face_photo
+                : `${API_BASE_URL}${resident.resident_details.face_photo}`
               : undefined,
           },
         },

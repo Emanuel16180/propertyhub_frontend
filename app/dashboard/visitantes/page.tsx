@@ -9,16 +9,19 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
-import { Plus, Search, Clock, User, Car, LogOut, Eye } from "lucide-react"
-import { LocalStorageDB, type Visitor } from "@/lib/local-storage"
+import { Plus, Search, Clock, User, Car, LogOut, Eye, Loader2 } from "lucide-react"
+import { visitorService, type VisitorLog } from "@/services/visitorService"
 
 export default function DashboardVisitantesPage() {
-  const [visitors, setVisitors] = useState<Visitor[]>([])
-  const [filteredVisitors, setFilteredVisitors] = useState<Visitor[]>([])
+  const [visitors, setVisitors] = useState<VisitorLog[]>([])
+  const [filteredVisitors, setFilteredVisitors] = useState<VisitorLog[]>([])
   const [showForm, setShowForm] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
-  const [statusFilter, setStatusFilter] = useState<"all" | "dentro" | "salio">("all")
-  const [selectedVisitor, setSelectedVisitor] = useState<Visitor | null>(null)
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "inactive">("all")
+  const [selectedVisitor, setSelectedVisitor] = useState<VisitorLog | null>(null)
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [checkingOutVisitorId, setCheckingOutVisitorId] = useState<number | null>(null)
 
   useEffect(() => {
     loadVisitors()
@@ -28,9 +31,32 @@ export default function DashboardVisitantesPage() {
     filterVisitors()
   }, [visitors, searchQuery, statusFilter])
 
-  const loadVisitors = () => {
-    const allVisitors = LocalStorageDB.getVisitors()
-    setVisitors(allVisitors)
+  const loadVisitors = async () => {
+    setIsLoading(true)
+    setError(null)
+
+    const response = await visitorService.getAllVisitors(true)
+
+    if (response.success && response.data) {
+      setVisitors(response.data)
+      console.log("[v0] Visitors data:", response.data)
+      console.log(
+        "[v0] Active visitors:",
+        response.data.filter((v) => v.is_active),
+      )
+      console.log(
+        "[v0] Visitors with vehicles:",
+        response.data.filter((v) => v.vehicle),
+      )
+      console.log(
+        "[v0] Active visitors with vehicles:",
+        response.data.filter((v) => v.vehicle && v.is_active),
+      )
+    } else {
+      setError(response.error || "Error al cargar visitantes")
+    }
+
+    setIsLoading(false)
   }
 
   const filterVisitors = () => {
@@ -38,35 +64,100 @@ export default function DashboardVisitantesPage() {
 
     // Apply search filter
     if (searchQuery.trim()) {
-      filtered = LocalStorageDB.searchVisitors(searchQuery)
+      const query = searchQuery.toLowerCase()
+      filtered = filtered.filter(
+        (visitor) =>
+          visitor.full_name.toLowerCase().includes(query) ||
+          visitor.document_id?.toLowerCase().includes(query) ||
+          visitor.property_details?.identifier.toLowerCase().includes(query) ||
+          visitor.common_area_details?.name.toLowerCase().includes(query) ||
+          visitor.vehicle?.license_plate.toLowerCase().includes(query),
+      )
     }
 
     // Apply status filter
-    if (statusFilter !== "all") {
-      filtered = filtered.filter((visitor) => visitor.status === statusFilter)
+    if (statusFilter === "active") {
+      filtered = filtered.filter((visitor) => visitor.is_active)
+    } else if (statusFilter === "inactive") {
+      filtered = filtered.filter((visitor) => !visitor.is_active)
     }
 
     setFilteredVisitors(filtered)
   }
 
-  const handleVisitorSuccess = (visitor: Visitor) => {
+  const handleVisitorSuccess = () => {
     setShowForm(false)
     loadVisitors()
   }
 
-  const handleVisitorExit = (visitorId: string) => {
-    LocalStorageDB.updateVisitorExit(visitorId)
-    loadVisitors()
+  const handleVisitorExit = async (visitorId: number) => {
+    if (checkingOutVisitorId === visitorId) {
+      return
+    }
+
+    setCheckingOutVisitorId(visitorId)
+    const response = await visitorService.checkOut(visitorId)
+
+    if (response.success) {
+      await loadVisitors()
+    } else {
+      alert(response.error || "Error al registrar salida")
+    }
+
+    setCheckingOutVisitorId(null)
   }
 
-  const getVisitPurposeLabel = (purpose: string) => {
-    const purposes = LocalStorageDB.getVisitPurposes()
-    return purposes.find((p) => p.value === purpose)?.label || purpose
+  const getReasonLabel = (reason: string) => {
+    const reasonMap: Record<string, string> = {
+      visita_familiar: "Visita Familiar",
+      delivery: "Delivery",
+      servicio_tecnico: "Servicio Técnico",
+      proveedor: "Proveedor",
+      otro: "Otro",
+    }
+    return reasonMap[reason] || reason
   }
 
   const getVehicleTypeLabel = (type: string) => {
-    const types = LocalStorageDB.getVehicleTypes()
-    return types.find((t) => t.value === type)?.label || type
+    const typeMap: Record<string, string> = {
+      light: "Liviano",
+      motorcycle: "Motocicleta",
+      heavy: "Pesado",
+    }
+    return typeMap[type] || type
+  }
+
+  const formatTime = (dateString: string) => {
+    return new Date(dateString).toLocaleTimeString("es-ES", {
+      hour: "2-digit",
+      minute: "2-digit",
+    })
+  }
+
+  const formatDate = (dateString: string) => {
+    return new Date(dateString).toLocaleDateString("es-ES")
+  }
+
+  const isToday = (dateString: string) => {
+    const date = new Date(dateString)
+    const today = new Date()
+    return (
+      date.getDate() === today.getDate() &&
+      date.getMonth() === today.getMonth() &&
+      date.getFullYear() === today.getFullYear()
+    )
+  }
+
+  if (isLoading) {
+    return (
+      <AuthGuard>
+        <DashboardLayout>
+          <div className="flex items-center justify-center h-64">
+            <Loader2 className="w-8 h-8 animate-spin text-primary" />
+          </div>
+        </DashboardLayout>
+      </AuthGuard>
+    )
   }
 
   return (
@@ -83,6 +174,14 @@ export default function DashboardVisitantesPage() {
               Registrar Visitante
             </Button>
           </div>
+
+          {error && (
+            <Card className="bg-red-50 border-red-200">
+              <CardContent className="p-4">
+                <p className="text-red-800">{error}</p>
+              </CardContent>
+            </Card>
+          )}
 
           {/* Search and Filter */}
           <div className="flex gap-4">
@@ -101,8 +200,8 @@ export default function DashboardVisitantesPage() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">Todos los visitantes</SelectItem>
-                <SelectItem value="dentro">Visitantes dentro</SelectItem>
-                <SelectItem value="salio">Visitantes que salieron</SelectItem>
+                <SelectItem value="active">Visitantes dentro</SelectItem>
+                <SelectItem value="inactive">Visitantes que salieron</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -117,7 +216,7 @@ export default function DashboardVisitantesPage() {
                   </div>
                   <div>
                     <p className="text-sm text-muted-foreground">Visitantes Dentro</p>
-                    <p className="text-2xl font-bold">{visitors.filter((v) => v.status === "dentro").length}</p>
+                    <p className="text-2xl font-bold">{visitors.filter((v) => v.is_active).length}</p>
                   </div>
                 </div>
               </CardContent>
@@ -131,9 +230,7 @@ export default function DashboardVisitantesPage() {
                   </div>
                   <div>
                     <p className="text-sm text-muted-foreground">Visitas Hoy</p>
-                    <p className="text-2xl font-bold">
-                      {visitors.filter((v) => v.created_at.startsWith(new Date().toISOString().split("T")[0])).length}
-                    </p>
+                    <p className="text-2xl font-bold">{visitors.filter((v) => isToday(v.check_in_time)).length}</p>
                   </div>
                 </div>
               </CardContent>
@@ -147,9 +244,7 @@ export default function DashboardVisitantesPage() {
                   </div>
                   <div>
                     <p className="text-sm text-muted-foreground">Con Vehículo</p>
-                    <p className="text-2xl font-bold">
-                      {visitors.filter((v) => v.vehicle?.has_vehicle && v.status === "dentro").length}
-                    </p>
+                    <p className="text-2xl font-bold">{visitors.filter((v) => v.vehicle && v.is_active).length}</p>
                   </div>
                 </div>
               </CardContent>
@@ -178,16 +273,23 @@ export default function DashboardVisitantesPage() {
                           <User className="w-6 h-6 text-primary" />
                         </div>
                         <div>
-                          <h3 className="font-semibold">{visitor.name}</h3>
-                          <p className="text-sm text-muted-foreground">Cédula: {visitor.id_number}</p>
+                          <h3 className="font-semibold">{visitor.full_name}</h3>
                           <p className="text-sm text-muted-foreground">
-                            Casa {visitor.house_number} - {visitor.host_name}
+                            Cédula: {visitor.document_id || "No especificada"}
+                          </p>
+                          <p className="text-sm text-muted-foreground">
+                            {visitor.destination_display ||
+                              (visitor.property_details
+                                ? `Casa ${visitor.property_details.identifier} - ${visitor.property_details.owner_name}`
+                                : visitor.common_area_details
+                                  ? `Área Común: ${visitor.common_area_details.name}`
+                                  : "Destino no especificado")}
                           </p>
                           <div className="flex items-center gap-2 mt-1">
                             <Badge variant="outline" className="text-xs">
-                              {getVisitPurposeLabel(visitor.visit_purpose)}
+                              {getReasonLabel(visitor.reason)}
                             </Badge>
-                            {visitor.vehicle?.has_vehicle && (
+                            {visitor.vehicle && (
                               <Badge variant="secondary" className="text-xs flex items-center gap-1">
                                 <Car className="w-3 h-3" />
                                 {visitor.vehicle.license_plate}
@@ -202,26 +304,28 @@ export default function DashboardVisitantesPage() {
                           <p className="text-sm font-medium">Entrada</p>
                           <p className="text-sm text-muted-foreground flex items-center gap-1">
                             <Clock className="w-3 h-3" />
-                            {visitor.entry_time}
+                            {formatTime(visitor.check_in_time)}
                           </p>
+                          <p className="text-xs text-muted-foreground">{formatDate(visitor.check_in_time)}</p>
                         </div>
 
                         <div className="text-center">
                           <p className="text-sm font-medium">Salida</p>
                           <p className="text-sm text-muted-foreground flex items-center gap-1">
                             <Clock className="w-3 h-3" />
-                            {visitor.exit_time || "-"}
+                            {visitor.check_out_time ? formatTime(visitor.check_out_time) : "-"}
                           </p>
+                          {visitor.check_out_time && (
+                            <p className="text-xs text-muted-foreground">{formatDate(visitor.check_out_time)}</p>
+                          )}
                         </div>
 
                         <div className="text-center">
                           <Badge
-                            variant={visitor.status === "dentro" ? "default" : "secondary"}
-                            className={
-                              visitor.status === "dentro" ? "bg-green-100 text-green-800" : "bg-gray-100 text-gray-800"
-                            }
+                            variant={visitor.is_active ? "default" : "secondary"}
+                            className={visitor.is_active ? "bg-green-100 text-green-800" : "bg-gray-100 text-gray-800"}
                           >
-                            {visitor.status === "dentro" ? "Dentro" : "Salió"}
+                            {visitor.is_active ? "Dentro" : "Salió"}
                           </Badge>
                         </div>
 
@@ -230,16 +334,25 @@ export default function DashboardVisitantesPage() {
                             <Eye className="w-4 h-4" />
                           </Button>
 
-                          {visitor.status === "dentro" && (
-                            <Button variant="outline" size="sm" onClick={() => handleVisitorExit(visitor.id)}>
-                              <LogOut className="w-4 h-4" />
+                          {visitor.is_active && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleVisitorExit(visitor.id)}
+                              disabled={checkingOutVisitorId === visitor.id}
+                            >
+                              {checkingOutVisitorId === visitor.id ? (
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                              ) : (
+                                <LogOut className="w-4 h-4" />
+                              )}
                             </Button>
                           )}
                         </div>
                       </div>
                     </div>
 
-                    {visitor.vehicle?.has_vehicle && (
+                    {visitor.vehicle && (
                       <div className="mt-4 p-3 bg-muted/50 rounded-lg">
                         <div className="flex items-center gap-4 text-sm">
                           <span className="font-medium">Vehículo:</span>
@@ -249,15 +362,15 @@ export default function DashboardVisitantesPage() {
                           <span>•</span>
                           <span>{visitor.vehicle.model}</span>
                           <span>•</span>
-                          <span>{getVehicleTypeLabel(visitor.vehicle.type || "")}</span>
+                          <span>{getVehicleTypeLabel(visitor.vehicle.vehicle_type)}</span>
                         </div>
                       </div>
                     )}
 
-                    {visitor.notes && (
+                    {visitor.observations && (
                       <div className="mt-3 p-3 bg-blue-50 rounded-lg">
                         <p className="text-sm text-blue-800">
-                          <strong>Observaciones:</strong> {visitor.notes}
+                          <strong>Observaciones:</strong> {visitor.observations}
                         </p>
                       </div>
                     )}
@@ -285,43 +398,50 @@ export default function DashboardVisitantesPage() {
 
                 <div className="space-y-3 text-sm">
                   <div>
-                    <strong>Nombre:</strong> {selectedVisitor.name}
+                    <strong>Nombre:</strong> {selectedVisitor.full_name}
                   </div>
                   <div>
-                    <strong>Cédula:</strong> {selectedVisitor.id_number}
+                    <strong>Cédula:</strong> {selectedVisitor.document_id || "No especificada"}
                   </div>
                   <div>
-                    <strong>Casa:</strong> {selectedVisitor.house_number}
+                    <strong>Destino:</strong>{" "}
+                    {selectedVisitor.destination_display ||
+                      (selectedVisitor.property_details
+                        ? `Casa ${selectedVisitor.property_details.identifier} - ${selectedVisitor.property_details.owner_name}`
+                        : selectedVisitor.common_area_details
+                          ? `Área Común: ${selectedVisitor.common_area_details.name}`
+                          : "No especificado")}
                   </div>
                   <div>
-                    <strong>Anfitrión:</strong> {selectedVisitor.host_name}
+                    <strong>Motivo:</strong> {getReasonLabel(selectedVisitor.reason)}
                   </div>
                   <div>
-                    <strong>Motivo:</strong> {getVisitPurposeLabel(selectedVisitor.visit_purpose)}
+                    <strong>Entrada:</strong> {formatTime(selectedVisitor.check_in_time)} -{" "}
+                    {formatDate(selectedVisitor.check_in_time)}
                   </div>
                   <div>
-                    <strong>Entrada:</strong> {selectedVisitor.entry_time}
-                  </div>
-                  <div>
-                    <strong>Salida:</strong> {selectedVisitor.exit_time || "Aún dentro"}
+                    <strong>Salida:</strong>{" "}
+                    {selectedVisitor.check_out_time
+                      ? `${formatTime(selectedVisitor.check_out_time)} - ${formatDate(selectedVisitor.check_out_time)}`
+                      : "Aún dentro"}
                   </div>
 
-                  {selectedVisitor.vehicle?.has_vehicle && (
+                  {selectedVisitor.vehicle && (
                     <div className="pt-2 border-t">
                       <strong>Información del Vehículo:</strong>
                       <div className="ml-4 mt-1 space-y-1">
                         <div>Placa: {selectedVisitor.vehicle.license_plate}</div>
                         <div>Color: {selectedVisitor.vehicle.color}</div>
                         <div>Modelo: {selectedVisitor.vehicle.model}</div>
-                        <div>Tipo: {getVehicleTypeLabel(selectedVisitor.vehicle.type || "")}</div>
+                        <div>Tipo: {getVehicleTypeLabel(selectedVisitor.vehicle.vehicle_type)}</div>
                       </div>
                     </div>
                   )}
 
-                  {selectedVisitor.notes && (
+                  {selectedVisitor.observations && (
                     <div className="pt-2 border-t">
                       <strong>Observaciones:</strong>
-                      <div className="mt-1">{selectedVisitor.notes}</div>
+                      <div className="mt-1">{selectedVisitor.observations}</div>
                     </div>
                   )}
                 </div>

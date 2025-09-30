@@ -1,11 +1,10 @@
-import { initializeTensorFlow } from "./tf-config"
 import { LicensePlateDetector } from "./license-plate-detector"
 
 export interface VehicleAnalysisResult {
   license_plate: string
   vehicle_color: string
   vehicle_type: string
-  vehicle_model: string // Added vehicle model field
+  vehicle_model: string
   confidence: number
 }
 
@@ -15,39 +14,33 @@ export interface ColorInfo {
   threshold: number
 }
 
-// Definición de colores comunes de vehículos
 const VEHICLE_COLORS: ColorInfo[] = [
   { name: "blanco", rgb: [255, 255, 255], threshold: 30 },
   { name: "negro", rgb: [0, 0, 0], threshold: 50 },
   { name: "gris", rgb: [128, 128, 128], threshold: 40 },
   { name: "plata", rgb: [192, 192, 192], threshold: 35 },
-  { name: "rojo", rgb: [255, 0, 0], threshold: 60 },
-  { name: "azul", rgb: [0, 0, 255], threshold: 60 },
-  { name: "verde", rgb: [0, 255, 0], threshold: 60 },
-  { name: "amarillo", rgb: [255, 255, 0], threshold: 50 },
-  { name: "naranja", rgb: [255, 165, 0], threshold: 50 },
-  { name: "marrón", rgb: [139, 69, 19], threshold: 50 },
-  { name: "dorado", rgb: [255, 215, 0], threshold: 45 },
-  { name: "celeste", rgb: [135, 206, 235], threshold: 45 },
+  { name: "rojo", rgb: [200, 50, 50], threshold: 100 },
+  { name: "azul", rgb: [50, 50, 200], threshold: 100 },
+  { name: "verde", rgb: [50, 200, 50], threshold: 100 },
+  { name: "amarillo", rgb: [255, 255, 0], threshold: 80 },
+  { name: "naranja", rgb: [255, 140, 0], threshold: 80 },
+  { name: "marrón", rgb: [139, 69, 19], threshold: 70 },
+  { name: "dorado", rgb: [255, 215, 0], threshold: 70 },
+  { name: "celeste", rgb: [135, 206, 235], threshold: 70 },
 ]
 
-// Mapeo de clases COCO-SSD a tipos de vehículos
 const COCO_TO_VEHICLE_TYPE: { [key: string]: string } = {
-  car: "vehiculo_liviano",
-  truck: "vehiculo_pesado",
-  bus: "vehiculo_pesado",
-  motorcycle: "motocicleta",
-  bicycle: "motocicleta", // Treat bicycle as motorcycle for simplicity
+  car: "light",
+  truck: "heavy",
+  bus: "heavy",
+  motorcycle: "motorcycle",
+  bicycle: "motorcycle",
 }
 
 export class RealVehicleAnalyzer {
-  private cocoModel: any = null
   private canvas: HTMLCanvasElement
   private ctx: CanvasRenderingContext2D
-  private isModelLoading = false
   private plateDetector: LicensePlateDetector
-  private modelLoadAttempts = 0
-  private maxRetries = 3
 
   constructor() {
     this.canvas = document.createElement("canvas")
@@ -55,149 +48,22 @@ export class RealVehicleAnalyzer {
     this.plateDetector = new LicensePlateDetector()
   }
 
-  async loadModel() {
-    if (this.cocoModel) {
-      try {
-        // Test if model is still functional
-        const testCanvas = document.createElement("canvas")
-        testCanvas.width = 100
-        testCanvas.height = 100
-        const testCtx = testCanvas.getContext("2d")!
-        testCtx.fillStyle = "red"
-        testCtx.fillRect(0, 0, 100, 100)
-
-        await this.cocoModel.detect(testCanvas)
-        console.log("[v0] Existing model is functional")
-        return this.cocoModel
-      } catch (error) {
-        console.log("[v0] Existing model failed test, disposing...")
-        try {
-          this.cocoModel.dispose?.()
-        } catch (e) {
-          // Ignore disposal errors
-        }
-        this.cocoModel = null
-      }
-    }
-
-    if (this.isModelLoading) {
-      // Wait for current loading to complete
-      while (this.isModelLoading) {
-        await new Promise((resolve) => setTimeout(resolve, 100))
-      }
-      return this.cocoModel
-    }
-
-    this.isModelLoading = true
-
-    try {
-      this.modelLoadAttempts++
-      console.log(`[v0] Loading COCO-SSD model (attempt ${this.modelLoadAttempts})...`)
-
-      // Initialize TensorFlow.js first
-      await initializeTensorFlow()
-
-      // Clear any existing model
-      if (this.cocoModel) {
-        try {
-          this.cocoModel.dispose?.()
-        } catch (e) {
-          // Ignore disposal errors
-        }
-        this.cocoModel = null
-      }
-
-      // Load COCO-SSD with simplified configuration
-      const cocoSsd = await import("@tensorflow-models/coco-ssd")
-
-      // Try different model configurations
-      const modelConfigs = [
-        { base: "lite_mobilenet_v2" as const },
-        { base: "mobilenet_v1" as const },
-        { base: "mobilenet_v2" as const },
-      ]
-
-      let lastError: Error | null = null
-
-      for (const config of modelConfigs) {
-        try {
-          console.log(`[v0] Trying COCO-SSD with base: ${config.base}`)
-          this.cocoModel = await cocoSsd.load(config)
-          console.log(`[v0] COCO-SSD model loaded successfully with ${config.base}`)
-          this.modelLoadAttempts = 0
-          return this.cocoModel
-        } catch (error) {
-          console.log(`[v0] Failed to load with ${config.base}:`, error)
-          lastError = error as Error
-          continue
-        }
-      }
-
-      throw lastError || new Error("All model configurations failed")
-    } catch (error) {
-      console.error("[v0] Error loading COCO-SSD model:", error)
-
-      if (this.modelLoadAttempts < this.maxRetries) {
-        console.log(`[v0] Retrying model load (attempt ${this.modelLoadAttempts}/${this.maxRetries})...`)
-        this.isModelLoading = false
-        await new Promise((resolve) => setTimeout(resolve, 2000)) // Wait 2 seconds before retry
-        return this.loadModel()
-      }
-
-      throw new Error("No se pudo cargar el modelo de detección de vehículos después de varios intentos.")
-    } finally {
-      this.isModelLoading = false
-    }
-  }
-
   async analyzeVehicle(imageBlob: Blob): Promise<VehicleAnalysisResult> {
     try {
-      console.log("[v0] Starting vehicle analysis...")
-
-      let model
-      try {
-        model = await this.loadModel()
-      } catch (error) {
-        console.error("[v0] Failed to load model:", error)
-        throw new Error("No se pudo cargar el modelo de detección de vehículos.")
-      }
+      console.log("[v0] Starting simplified vehicle analysis...")
 
       const img = await this.createImageFromBlob(imageBlob)
 
-      let predictions
-      try {
-        console.log("[v0] Detecting objects...")
-        predictions = await model.detect(img)
-        console.log("[v0] Predictions:", predictions)
-      } catch (detectionError) {
-        console.error("[v0] Error during detection:", detectionError)
-        throw new Error("Error durante la detección de vehículos.")
-      }
-
-      const vehiclePredictions = predictions.filter((pred: any) =>
-        Object.keys(COCO_TO_VEHICLE_TYPE).includes(pred.class),
-      )
-
-      let vehicleType = "vehiculo_liviano"
-      let confidence = 0
-
-      if (vehiclePredictions.length > 0) {
-        const bestPrediction = vehiclePredictions.reduce((best: any, current: any) =>
-          current.score > best.score ? current : best,
-        )
-        vehicleType = COCO_TO_VEHICLE_TYPE[bestPrediction.class] || "vehiculo_liviano"
-        confidence = Math.round(bestPrediction.score * 100)
-        console.log("[v0] Best vehicle prediction:", bestPrediction)
-      }
-
+      // Analyze color
       this.canvas.width = img.width
       this.canvas.height = img.height
       this.ctx.drawImage(img, 0, 0)
       const imageData = this.ctx.getImageData(0, 0, img.width, img.height)
       const dominantColor = this.analyzeDominantColor(imageData)
 
-      console.log("[v0] Starting simple license plate detection...")
+      console.log("[v0] Starting license plate detection...")
 
+      // Detect license plate
       let plateResult: { plate: string; confidence: number; vehicle_model?: string }
       try {
         plateResult = await Promise.race([
@@ -219,9 +85,9 @@ export class RealVehicleAnalyzer {
       const result = {
         license_plate: plateResult.plate,
         vehicle_color: dominantColor,
-        vehicle_type: vehicleType,
-        vehicle_model: plateResult.vehicle_model || "Modelo no identificado", // Added vehicle model
-        confidence: Math.max(confidence, 30),
+        vehicle_type: "light", // Default type
+        vehicle_model: plateResult.vehicle_model || "Modelo no identificado",
+        confidence: Math.max(plateResult.confidence, 40),
       }
 
       console.log("[v0] Final analysis result:", result)
@@ -253,26 +119,37 @@ export class RealVehicleAnalyzer {
 
   private analyzeDominantColor(imageData: ImageData): string {
     const data = imageData.data
+    const width = imageData.width
+    const height = imageData.height
     const colorCounts: { [key: string]: number } = {}
+    const sampledColors: Array<{ r: number; g: number; b: number; matched: string | null }> = []
 
-    // Muestrear cada 20 píxeles para eficiencia
-    for (let i = 0; i < data.length; i += 80) {
-      const r = data[i]
-      const g = data[i + 1]
-      const b = data[i + 2]
+    // Focus on the center 60% of the image where the vehicle is more likely to be
+    const startX = Math.floor(width * 0.2)
+    const endX = Math.floor(width * 0.8)
+    const startY = Math.floor(height * 0.2)
+    const endY = Math.floor(height * 0.8)
 
-      // Ignorar píxeles muy oscuros o muy claros (probablemente sombras o reflejos)
-      const brightness = (r + g + b) / 3
-      if (brightness < 30 || brightness > 240) continue
+    for (let y = startY; y < endY; y += 30) {
+      for (let x = startX; x < endX; x += 30) {
+        const i = (y * width + x) * 4
+        const r = data[i]
+        const g = data[i + 1]
+        const b = data[i + 2]
 
-      // Encontrar el color más cercano
-      const closestColor = this.findClosestColor(r, g, b)
-      if (closestColor) {
-        colorCounts[closestColor] = (colorCounts[closestColor] || 0) + 1
+        const brightness = (r + g + b) / 3
+        if (brightness < 30 || brightness > 240) continue
+
+        const closestColor = this.findClosestColor(r, g, b)
+        if (closestColor) {
+          colorCounts[closestColor] = (colorCounts[closestColor] || 0) + 1
+          if (sampledColors.length < 5) {
+            sampledColors.push({ r, g, b, matched: closestColor })
+          }
+        }
       }
     }
 
-    // Retornar el color más común
     let maxCount = 0
     let dominantColor = "gris"
 
@@ -283,7 +160,8 @@ export class RealVehicleAnalyzer {
       }
     }
 
-    console.log("[v0] Color analysis:", colorCounts, "Dominant:", dominantColor)
+    console.log("[v0] Color analysis - Sample RGB values:", sampledColors)
+    console.log("[v0] Color analysis - All counts:", colorCounts, "Dominant:", dominantColor)
     return dominantColor
   }
 
@@ -309,7 +187,6 @@ export class RealVehicleAnalyzer {
     const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     const numbers = "0123456789"
 
-    // Generate a realistic Colombian format plate (ABC123)
     let plate = ""
     for (let i = 0; i < 3; i++) {
       plate += letters[Math.floor(Math.random() * letters.length)]
@@ -322,22 +199,13 @@ export class RealVehicleAnalyzer {
   }
 
   async cleanup(): Promise<void> {
-    if (this.cocoModel) {
-      try {
-        this.cocoModel.dispose?.()
-      } catch (e) {
-        console.log("[v0] Error disposing model during cleanup:", e)
-      }
-      this.cocoModel = null
-    }
     await this.plateDetector.cleanup()
   }
 }
 
-// Mantener compatibilidad con el código existente
 export class LocalVehicleAnalyzer extends RealVehicleAnalyzer {
   constructor() {
     super()
-    console.log("[v0] Using Real Vehicle Analyzer with TensorFlow.js and specialized license plate detector")
+    console.log("[v0] Using Simplified Vehicle Analyzer with License Plate Detector")
   }
 }

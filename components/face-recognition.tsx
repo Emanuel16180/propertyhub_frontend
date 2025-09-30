@@ -2,9 +2,10 @@
 
 import { useRef, useState, useCallback, useEffect } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Shield, CheckCircle, XCircle, Clock, Loader2, Eye } from "lucide-react"
-import { LocalStorageDB, type AccessLog } from "@/lib/local-storage"
-import { faceRecognitionService } from "@/lib/face-recognition-real"
+import { Button } from "@/components/ui/button"
+import { Shield, CheckCircle, XCircle, Clock, Loader2, Eye, Play, Square } from "lucide-react"
+import { accessControlService, type AccessLogResponse } from "@/services/accessControlService"
+import { backendFaceRecognitionService } from "@/lib/face-recognition-backend"
 
 interface FaceRecognitionResult {
   recognized: boolean
@@ -22,8 +23,9 @@ export function FaceRecognition() {
 
   const [isStreaming, setIsStreaming] = useState(false)
   const [isProcessing, setIsProcessing] = useState(false)
+  const [isRecognitionActive, setIsRecognitionActive] = useState(false)
   const [recognitionResult, setRecognitionResult] = useState<FaceRecognitionResult | null>(null)
-  const [recentAccess, setRecentAccess] = useState<AccessLog[]>([])
+  const [recentAccess, setRecentAccess] = useState<AccessLogResponse[]>([])
   const [systemStatus, setSystemStatus] = useState<"waiting" | "motion_detected" | "searching" | "processing">(
     "waiting",
   )
@@ -70,35 +72,41 @@ export function FaceRecognition() {
   }, [])
 
   const startMotionDetection = useCallback(() => {
+    if (!isRecognitionActive) {
+      if (motionDetectionRef.current) {
+        clearInterval(motionDetectionRef.current)
+        motionDetectionRef.current = null
+      }
+      return
+    }
+
     if (motionDetectionRef.current) {
       clearInterval(motionDetectionRef.current)
     }
 
     motionDetectionRef.current = setInterval(async () => {
-      if (!isStreaming || isProcessing) return
+      if (!isStreaming || isProcessing || !isRecognitionActive) return
 
       const hasMotion = detectMotion()
 
       if (hasMotion && systemStatus === "waiting") {
-        console.log("[v0] Movimiento detectado, iniciando reconocimiento")
         setSystemStatus("motion_detected")
 
         setTimeout(async () => {
+          if (!isRecognitionActive) return
+
           setSystemStatus("searching")
           await processRecognition()
           setTimeout(() => {
+            if (!isRecognitionActive) return
+
             setSystemStatus("waiting")
-            // Reiniciar la detección de movimiento después del timeout
             startMotionDetection()
-          }, 6000) // 6 segundos para asegurar que el mensaje se vea completamente
+          }, 6000)
         }, 1000)
       }
     }, 500)
-
-    if (systemStatus === "waiting") {
-      console.log("[v0] Sistema de detección iniciado")
-    }
-  }, [isStreaming, isProcessing, systemStatus, detectMotion])
+  }, [isStreaming, isProcessing, systemStatus, detectMotion, isRecognitionActive])
 
   const startCamera = useCallback(async () => {
     try {
@@ -111,13 +119,28 @@ export function FaceRecognition() {
         setIsStreaming(true)
         setRecognitionResult(null)
         setSystemStatus("waiting")
-        console.log("[v0] Cámara iniciada automáticamente")
       }
     } catch (error) {
       console.error("Error accessing camera:", error)
       alert("No se pudo acceder a la cámara. Por favor, verifica los permisos.")
     }
   }, [])
+
+  const toggleRecognition = useCallback(() => {
+    if (isRecognitionActive) {
+      setIsRecognitionActive(false)
+      if (motionDetectionRef.current) {
+        clearInterval(motionDetectionRef.current)
+        motionDetectionRef.current = null
+      }
+      setSystemStatus("waiting")
+      setRecognitionResult(null)
+      setIsProcessing(false) // Reset processing state
+    } else {
+      setIsRecognitionActive(true)
+      setSystemStatus("waiting")
+    }
+  }, [isRecognitionActive])
 
   const processRecognition = useCallback(async () => {
     if (!videoRef.current || !canvasRef.current || isProcessing) return
@@ -136,64 +159,62 @@ export function FaceRecognition() {
 
         const img = new Image()
         img.crossOrigin = "anonymous"
-        img.src = canvas.toDataURL("image/jpeg", 0.8)
+        img.src = canvas.toDataURL("image/jpeg", 0.95)
 
         await new Promise((resolve, reject) => {
           img.onload = resolve
           img.onerror = reject
         })
 
-        console.log("[v0] Procesando reconocimiento facial...")
-
-        const faceResult = await faceRecognitionService.recognizeFace(img)
+        const faceResult = await backendFaceRecognitionService.recognizeFace(img)
 
         let result: FaceRecognitionResult
 
-        if (faceResult && faceResult.confidence >= 0.55) {
-          const residents = LocalStorageDB.getResidents()
-          const resident = residents.find((r) => r.name === faceResult.name)
+        if (faceResult.recognized && faceResult.confidence >= 0.35) {
+          const resident = faceResult.resident
 
           if (resident) {
-            console.log("[v0] Residente reconocido:", resident.name, "Confianza:", faceResult.confidence)
             result = {
               recognized: true,
-              resident,
+              resident: {
+                id: resident.id.toString(),
+                name: `${resident.first_name} ${resident.last_name}`,
+                apartment_number: resident.profile.resident_info.house_identifier,
+                type: resident.profile.resident_info.resident_type,
+              },
               confidence: faceResult.confidence,
-              message: `Acceso autorizado para ${resident.name}`,
+              message: `Acceso autorizado para ${resident.first_name} ${resident.last_name}`,
             }
           } else {
-            console.log("[v0] Nombre reconocido pero residente no encontrado:", faceResult.name)
             result = {
               recognized: false,
               confidence: faceResult.confidence,
-              message: `Rostro reconocido como ${faceResult.name} pero no encontrado en base de datos`,
+              message: "Rostro reconocido pero datos no disponibles",
             }
           }
-        } else if (faceResult) {
-          console.log("[v0] Confianza insuficiente:", faceResult.confidence)
+        } else if (faceResult.confidence > 0) {
           result = {
             recognized: false,
             confidence: faceResult.confidence,
             message: `Rostro detectado pero confianza insuficiente (${(faceResult.confidence * 100).toFixed(1)}%)`,
           }
         } else {
-          console.log("[v0] No se detectó rostro")
           result = {
             recognized: false,
             confidence: 0,
-            message: "No se detectó ningún rostro en la imagen",
+            message: faceResult.message || "No se detectó ningún rostro en la imagen",
           }
         }
 
         setRecognitionResult(result)
 
-        LocalStorageDB.saveAccessLog({
-          resident_id: result.resident?.id || undefined,
-          access_time: new Date().toISOString(),
-          access_type: "facial_recognition",
-          confidence_score: result.confidence,
-          status: result.recognized ? "granted" : "denied",
-          notes: result.message,
+        await accessControlService.registerAccessAttempt({
+          resident_id: result.resident ? Number.parseInt(result.resident.id) : null,
+          confidence: result.confidence,
+          is_authorized: result.recognized,
+          main_message: result.recognized ? "Autorizado" : "Desconocido",
+          detail_message: result.message,
+          access_point: "Puerta Principal",
         })
 
         loadRecentAccess()
@@ -206,7 +227,7 @@ export function FaceRecognition() {
         )
       }
     } catch (error) {
-      console.error("[v0] Error processing recognition:", error)
+      console.error("Error processing recognition:", error)
       setRecognitionResult({
         recognized: false,
         confidence: 0,
@@ -221,9 +242,13 @@ export function FaceRecognition() {
     }
   }, [isProcessing])
 
-  const loadRecentAccess = useCallback(() => {
-    const logs = LocalStorageDB.getAccessLogs().slice(0, 5)
-    setRecentAccess(logs)
+  const loadRecentAccess = useCallback(async () => {
+    const response = await accessControlService.getAllAccessLogs()
+    if (response.success && response.data) {
+      setRecentAccess(response.data)
+    } else {
+      console.error("Error loading recent access:", response.error)
+    }
   }, [])
 
   useEffect(() => {
@@ -242,19 +267,34 @@ export function FaceRecognition() {
   }, [loadRecentAccess, startCamera])
 
   useEffect(() => {
-    if (isStreaming) {
+    if (isStreaming && isRecognitionActive) {
       setTimeout(() => {
         startMotionDetection()
       }, 1000)
+    } else {
+      if (motionDetectionRef.current) {
+        clearInterval(motionDetectionRef.current)
+        motionDetectionRef.current = null
+      }
     }
+
     return () => {
       if (motionDetectionRef.current) {
         clearInterval(motionDetectionRef.current)
+        motionDetectionRef.current = null
       }
     }
-  }, [isStreaming, startMotionDetection])
+  }, [isStreaming, isRecognitionActive, startMotionDetection])
 
   const getStatusDisplay = () => {
+    if (!isRecognitionActive) {
+      return {
+        color: "bg-gray-500",
+        icon: <Eye className="w-4 h-4" />,
+        text: "Sistema inactivo",
+      }
+    }
+
     switch (systemStatus) {
       case "waiting":
         return {
@@ -294,7 +334,11 @@ export function FaceRecognition() {
               <Shield className="w-5 h-5" />
               Reconocimiento Facial Automático
             </CardTitle>
-            <CardDescription>Sistema de control de acceso automático - Simplemente mire a la cámara</CardDescription>
+            <CardDescription>
+              {isRecognitionActive
+                ? "Sistema de control de acceso automático - Simplemente mire a la cámara"
+                : "Presione el botón para iniciar el sistema de reconocimiento"}
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="relative aspect-[4/3] bg-muted rounded-lg overflow-hidden">
@@ -311,7 +355,7 @@ export function FaceRecognition() {
                 <div className="absolute inset-0 flex items-center justify-center">
                   <div className="text-center">
                     <Loader2 className="w-12 h-12 mx-auto mb-2 text-muted-foreground animate-spin" />
-                    <p className="text-sm text-muted-foreground">Iniciando cámara automáticamente...</p>
+                    <p className="text-sm text-muted-foreground">Iniciando cámara...</p>
                   </div>
                 </div>
               )}
@@ -355,9 +399,37 @@ export function FaceRecognition() {
             <canvas ref={canvasRef} className="hidden" />
             <canvas ref={motionCanvasRef} className="hidden" />
 
-            <div className="text-center text-sm text-muted-foreground">
-              <p>El sistema está funcionando automáticamente</p>
-              <p>Simplemente mire a la cámara para ser reconocido</p>
+            <div className="flex flex-col gap-2">
+              <Button
+                onClick={toggleRecognition}
+                disabled={!isStreaming}
+                className="w-full"
+                variant={isRecognitionActive ? "destructive" : "default"}
+                size="lg"
+              >
+                {isRecognitionActive ? (
+                  <>
+                    <Square className="w-4 h-4 mr-2" />
+                    Detener Sistema de Reconocimiento
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-4 h-4 mr-2" />
+                    Iniciar Sistema de Reconocimiento
+                  </>
+                )}
+              </Button>
+
+              <div className="text-center text-sm text-muted-foreground">
+                {isRecognitionActive ? (
+                  <>
+                    <p>El sistema está funcionando automáticamente</p>
+                    <p>Simplemente mire a la cámara para ser reconocido</p>
+                  </>
+                ) : (
+                  <p>Presione el botón para activar el reconocimiento facial</p>
+                )}
+              </div>
             </div>
           </CardContent>
         </Card>
@@ -368,10 +440,10 @@ export function FaceRecognition() {
               <Clock className="w-5 h-5" />
               Accesos Recientes
             </CardTitle>
-            <CardDescription>Últimos intentos de acceso registrados</CardDescription>
+            <CardDescription>Historial completo de intentos de acceso</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="space-y-3">
+            <div className="space-y-3 max-h-[500px] overflow-y-auto pr-2">
               {recentAccess.length === 0 ? (
                 <p className="text-sm text-muted-foreground text-center py-4">No hay registros de acceso recientes</p>
               ) : (
@@ -379,35 +451,45 @@ export function FaceRecognition() {
                   <div
                     key={log.id}
                     className={`p-3 rounded-lg border ${
-                      log.status === "granted" ? "bg-green-50 border-green-200" : "bg-red-50 border-red-200"
+                      log.is_authorized ? "bg-green-50 border-green-200" : "bg-red-50 border-red-200"
                     }`}
                   >
                     <div className="flex items-start justify-between">
                       <div className="flex items-center gap-2">
-                        {log.status === "granted" ? (
+                        {log.is_authorized ? (
                           <CheckCircle className="w-4 h-4 text-green-600" />
                         ) : (
                           <XCircle className="w-4 h-4 text-red-600" />
                         )}
                         <div>
-                          <p className="font-medium text-sm">{log.resident?.name || "Desconocido"}</p>
-                          {log.resident && (
+                          <p className="font-medium text-sm">
+                            {log.resident?.first_name && log.resident?.last_name
+                              ? `${log.resident.first_name} ${log.resident.last_name}`
+                              : log.main_message || "Desconocido"}
+                          </p>
+                          {log.resident?.profile?.resident_info && (
                             <p className="text-xs text-muted-foreground">
-                              {log.resident.apartment_number} • {log.resident.type}
+                              {log.resident.profile.resident_info.house_identifier} •{" "}
+                              {log.resident.profile.resident_info.resident_type}
                             </p>
                           )}
                         </div>
                       </div>
                       <div className="text-right">
                         <p className="text-xs text-muted-foreground">
+                          {new Date(log.access_time).toLocaleDateString()}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
                           {new Date(log.access_time).toLocaleTimeString()}
                         </p>
-                        {log.confidence_score && (
-                          <p className="text-xs text-muted-foreground">{(log.confidence_score * 100).toFixed(1)}%</p>
+                        {log.confidence && (
+                          <p className="text-xs text-muted-foreground">
+                            {(Number.parseFloat(log.confidence) * 100).toFixed(1)}%
+                          </p>
                         )}
                       </div>
                     </div>
-                    {log.notes && <p className="text-xs text-muted-foreground mt-1">{log.notes}</p>}
+                    {log.detail_message && <p className="text-xs text-muted-foreground mt-1">{log.detail_message}</p>}
                   </div>
                 ))
               )}

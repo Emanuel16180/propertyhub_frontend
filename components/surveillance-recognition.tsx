@@ -2,9 +2,11 @@
 
 import { useRef, useState, useCallback, useEffect } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Shield, AlertTriangle, Loader2, Eye } from "lucide-react"
-import { LocalStorageDB, type AccessLog } from "@/lib/local-storage"
-import { faceRecognitionService } from "@/lib/face-recognition-real"
+import { Button } from "@/components/ui/button"
+import { Shield, AlertTriangle, Loader2, Eye, CheckCircle } from "lucide-react"
+import { backendFaceRecognitionService } from "@/lib/face-recognition-backend"
+import { intrusionService, type IntrusionAlertResponse } from "@/services/intrusionService"
+import { communicationsAPI } from "@/lib/api/communications"
 
 interface SurveillanceResult {
   intruderDetected: boolean
@@ -23,7 +25,7 @@ export function SurveillanceRecognition() {
   const [isStreaming, setIsStreaming] = useState(false)
   const [isProcessing, setIsProcessing] = useState(false)
   const [surveillanceResult, setSurveillanceResult] = useState<SurveillanceResult | null>(null)
-  const [intruderDetections, setIntruderDetections] = useState<AccessLog[]>([])
+  const [intrusionAlerts, setIntrusionAlerts] = useState<IntrusionAlertResponse[]>([])
   const [systemStatus, setSystemStatus] = useState<"waiting" | "motion_detected" | "searching" | "processing">(
     "waiting",
   )
@@ -144,51 +146,118 @@ export function SurveillanceRecognition() {
 
         console.log("[v0] Procesando detección de intrusos...")
 
-        const faceResult = await faceRecognitionService.recognizeFace(img)
+        const faceResult = await backendFaceRecognitionService.recognizeFace(img)
 
         let result: SurveillanceResult
 
-        if (faceResult && faceResult.confidence >= 0.55) {
-          const residents = LocalStorageDB.getResidents()
-          const resident = residents.find((r) => r.name === faceResult.name)
+        if (faceResult.recognized && faceResult.confidence >= 0.45) {
+          const resident = faceResult.resident
 
           if (resident) {
-            console.log("[v0] Residente autorizado detectado:", resident.name)
+            console.log(`[v0] Residente autorizado detectado: ${resident.first_name} ${resident.last_name}`)
             result = {
               intruderDetected: false,
-              resident,
+              resident: {
+                id: resident.id.toString(),
+                name: `${resident.first_name} ${resident.last_name}`,
+                apartment_number: resident.profile.resident_info.house_identifier,
+                type: resident.profile.resident_info.resident_type,
+              },
               confidence: faceResult.confidence,
-              message: `Residente autorizado: ${resident.name}`,
+              message: `Residente autorizado: ${resident.first_name} ${resident.last_name}`,
             }
           } else {
-            console.log("[v0] Intruso detectado - rostro reconocido pero no autorizado:", faceResult.name)
+            console.log("[v0] Intruso detectado - rostro reconocido pero no autorizado")
             result = {
               intruderDetected: true,
               confidence: faceResult.confidence,
-              message: `Intruso detectado - Persona no autorizada`,
+              message: "Intruso detectado - Persona no autorizada",
+            }
+
+            const intrusionResponse = await intrusionService.registerIntrusion({
+              message: "Intruso detectado - Persona no autorizada",
+              confidence: faceResult.confidence,
+              camera_identifier: "CAM-Principal-01",
+            })
+
+            if (intrusionResponse.success) {
+              console.log("[v0] Creating security communication for intrusion alert")
+              try {
+                await communicationsAPI.createCommunication({
+                  title: "Alerta de Seguridad: Persona no autorizada detectada",
+                  message: `Estimados residentes,
+
+Se ha detectado el ingreso de una persona no reconocida/no autorizada en el condominio.
+
+Por favor, mantengan la calma, eviten salir innecesariamente y asegúrense de mantener puertas y ventanas cerradas.
+
+La administración y el personal de seguridad ya están atendiendo la situación.
+
+Ante cualquier emergencia, comuníquese de inmediato con la portería.
+
+Detalles de la detección:
+- Cámara: CAM-Principal-01
+- Fecha y hora: ${new Date().toLocaleString("es-ES")}
+- Nivel de confianza: ${(faceResult.confidence * 100).toFixed(1)}%`,
+                  communication_type: "urgent",
+                  priority: "alta",
+                  target_audience: "all_residents",
+                  expires_at: null,
+                })
+                console.log("[v0] Security communication created successfully")
+              } catch (commError) {
+                console.error("[v0] Error creating security communication:", commError)
+              }
             }
           }
         } else {
           console.log("[v0] Intruso detectado - rostro no reconocido")
           result = {
             intruderDetected: true,
-            confidence: faceResult?.confidence || 0,
-            message: "Intruso detectado - Rostro no reconocido",
+            confidence: faceResult.confidence,
+            message: faceResult.message || "Intruso detectado - Rostro no reconocido",
+          }
+
+          const intrusionResponse = await intrusionService.registerIntrusion({
+            message: faceResult.message || "Intruso detectado - Rostro no reconocido",
+            confidence: faceResult.confidence,
+            camera_identifier: "CAM-Principal-01",
+          })
+
+          if (intrusionResponse.success) {
+            console.log("[v0] Creating security communication for intrusion alert")
+            try {
+              await communicationsAPI.createCommunication({
+                title: "Alerta de Seguridad: Persona no autorizada detectada",
+                message: `Estimados residentes,
+
+Se ha detectado el ingreso de una persona no reconocida/no autorizada en el condominio.
+
+Por favor, mantengan la calma, eviten salir innecesariamente y asegúrense de mantener puertas y ventanas cerradas.
+
+La administración y el personal de seguridad ya están atendiendo la situación.
+
+Ante cualquier emergencia, comuníquese de inmediato con la portería.
+
+Detalles de la detección:
+- Cámara: CAM-Principal-01
+- Fecha y hora: ${new Date().toLocaleString("es-ES")}
+- Nivel de confianza: ${(faceResult.confidence * 100).toFixed(1)}%`,
+                communication_type: "urgent",
+                priority: "alta",
+                target_audience: "all_residents",
+                expires_at: null,
+              })
+              console.log("[v0] Security communication created successfully")
+            } catch (commError) {
+              console.error("[v0] Error creating security communication:", commError)
+            }
           }
         }
 
         setSurveillanceResult(result)
 
-        LocalStorageDB.saveAccessLog({
-          resident_id: result.resident?.id || undefined,
-          access_time: new Date().toISOString(),
-          access_type: "surveillance",
-          confidence_score: result.confidence,
-          status: result.intruderDetected ? "intrusion" : "authorized",
-          notes: result.message,
-        })
-
-        loadIntruderDetections()
+        loadIntrusionAlerts()
 
         setTimeout(
           () => {
@@ -213,15 +282,31 @@ export function SurveillanceRecognition() {
     }
   }, [isProcessing])
 
-  const loadIntruderDetections = useCallback(() => {
-    const logs = LocalStorageDB.getAccessLogs()
-      .filter((log) => log.access_type === "surveillance")
-      .slice(0, 5)
-    setIntruderDetections(logs)
+  const loadIntrusionAlerts = useCallback(async () => {
+    const response = await intrusionService.getIntrusions(false)
+    if (response.success && response.data) {
+      setIntrusionAlerts(response.data.slice(0, 10))
+    } else {
+      console.error("Error loading intrusion alerts:", response.error)
+    }
   }, [])
 
+  const handleResolveAlert = useCallback(
+    async (alertId: number) => {
+      const response = await intrusionService.resolveIntrusion(alertId)
+      if (response.success) {
+        console.log("[v0] Alert resolved successfully")
+        loadIntrusionAlerts()
+      } else {
+        console.error("Error resolving alert:", response.error)
+        alert(`Error al resolver alerta: ${response.error}`)
+      }
+    },
+    [loadIntrusionAlerts],
+  )
+
   useEffect(() => {
-    loadIntruderDetections()
+    loadIntrusionAlerts()
     startCamera()
 
     return () => {
@@ -233,7 +318,7 @@ export function SurveillanceRecognition() {
         stream.getTracks().forEach((track) => track.stop())
       }
     }
-  }, [loadIntruderDetections, startCamera])
+  }, [loadIntrusionAlerts, startCamera])
 
   useEffect(() => {
     if (isStreaming) {
@@ -360,52 +445,48 @@ export function SurveillanceRecognition() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <AlertTriangle className="w-5 h-5" />
-              Intrusos Detectados
+              Alertas de Intrusión Pendientes
             </CardTitle>
-            <CardDescription>Últimas detecciones del sistema de vigilancia</CardDescription>
+            <CardDescription>Intrusiones detectadas que requieren atención</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="space-y-3">
-              {intruderDetections.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-4">No hay detecciones recientes</p>
+            <div className="space-y-3 max-h-[500px] overflow-y-auto pr-2">
+              {intrusionAlerts.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-4">No hay alertas pendientes</p>
               ) : (
-                intruderDetections.map((log) => (
-                  <div
-                    key={log.id}
-                    className={`p-3 rounded-lg border ${
-                      log.status === "intrusion" ? "bg-red-50 border-red-200" : "bg-green-50 border-green-200"
-                    }`}
-                  >
-                    <div className="flex items-start justify-between">
-                      <div className="flex items-center gap-2">
-                        {log.status === "intrusion" ? (
-                          <AlertTriangle className="w-4 h-4 text-red-600" />
-                        ) : (
-                          <Shield className="w-4 h-4 text-green-600" />
-                        )}
-                        <div>
-                          <p className="font-medium text-sm">
-                            {log.status === "intrusion"
-                              ? "Intruso detectado"
-                              : log.resident?.name || "Residente autorizado"}
-                          </p>
-                          {log.resident && (
-                            <p className="text-xs text-muted-foreground">
-                              {log.resident.apartment_number} • {log.resident.type}
-                            </p>
-                          )}
+                intrusionAlerts.map((alert) => (
+                  <div key={alert.id} className="p-3 rounded-lg border bg-red-50 border-red-200">
+                    <div className="flex items-start justify-between mb-2">
+                      <div className="flex items-center gap-2 flex-1">
+                        <AlertTriangle className="w-4 h-4 text-red-600 flex-shrink-0" />
+                        <div className="flex-1">
+                          <p className="font-medium text-sm">{alert.message}</p>
+                          <p className="text-xs text-muted-foreground">Cámara: {alert.camera_identifier}</p>
                         </div>
                       </div>
-                      <div className="text-right">
+                      <div className="text-right flex-shrink-0 ml-2">
                         <p className="text-xs text-muted-foreground">
-                          {new Date(log.access_time).toLocaleTimeString()}
+                          {new Date(alert.detection_time).toLocaleDateString()}
                         </p>
-                        {log.confidence_score && (
-                          <p className="text-xs text-muted-foreground">{(log.confidence_score * 100).toFixed(1)}%</p>
-                        )}
+                        <p className="text-xs text-muted-foreground">
+                          {new Date(alert.detection_time).toLocaleTimeString()}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {(Number.parseFloat(alert.confidence) * 100).toFixed(1)}%
+                        </p>
                       </div>
                     </div>
-                    {log.notes && <p className="text-xs text-muted-foreground mt-1">{log.notes}</p>}
+                    {!alert.is_resolved && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="w-full mt-2 bg-transparent"
+                        onClick={() => handleResolveAlert(alert.id)}
+                      >
+                        <CheckCircle className="w-3 h-3 mr-1" />
+                        Marcar como Resuelta
+                      </Button>
+                    )}
                   </div>
                 ))
               )}

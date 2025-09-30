@@ -6,18 +6,18 @@ export interface IdCardResult {
 }
 
 export class IdCardDetector {
-  private static readonly API_URL = "https://api.mindee.net/v1/products/mindee/idcard_fr/v2/predict"
-  private static readonly API_TOKEN = "your_mindee_api_token_here" // You'll need to get this
+  private static readonly OCR_SPACE_API_KEY = "K87899142388957" // Free tier API key
+  private static readonly OCR_SPACE_URL = "https://api.ocr.space/parse/image"
 
   static async detectIdCard(imageBlob: Blob, side: "front" | "back"): Promise<IdCardResult> {
     try {
-      console.log("[v0] Starting ID card detection for", side, "side...")
+      console.log("[v0] Starting ID card detection for", side, "side with OCR.space API...")
 
       // Convert blob to base64
       const base64Image = await this.blobToBase64(imageBlob)
 
-      // For now, we'll use enhanced OCR processing since we don't have Mindee API key
-      return await this.processWithEnhancedOCR(base64Image, side)
+      // Use OCR.space API for better accuracy
+      return await this.processWithOCRSpace(base64Image, side)
     } catch (error) {
       console.error("[v0] ID card detection error:", error)
       throw new Error(`Error al procesar la cédula: ${(error as Error).message}`)
@@ -29,24 +29,70 @@ export class IdCardDetector {
       const reader = new FileReader()
       reader.onload = () => {
         const result = reader.result as string
-        // Remove data:image/jpeg;base64, prefix
-        const base64 = result.split(",")[1]
-        resolve(base64)
+        resolve(result) // Keep the full data URL for OCR.space
       }
       reader.onerror = reject
       reader.readAsDataURL(blob)
     })
   }
 
-  private static async processWithEnhancedOCR(base64Image: string, side: "front" | "back"): Promise<IdCardResult> {
-    // Create image element for processing
+  private static async processWithOCRSpace(base64Image: string, side: "front" | "back"): Promise<IdCardResult> {
+    try {
+      console.log("[v0] Calling OCR.space API...")
+
+      const formData = new FormData()
+      formData.append("base64Image", base64Image)
+      formData.append("language", "spa") // Spanish
+      formData.append("isOverlayRequired", "false")
+      formData.append("detectOrientation", "true")
+      formData.append("scale", "true")
+      formData.append("OCREngine", "2") // Engine 2 is better for documents
+
+      const response = await fetch(this.OCR_SPACE_URL, {
+        method: "POST",
+        headers: {
+          apikey: this.OCR_SPACE_API_KEY,
+        },
+        body: formData,
+      })
+
+      if (!response.ok) {
+        throw new Error(`OCR API error: ${response.status}`)
+      }
+
+      const result = await response.json()
+      console.log("[v0] OCR.space API response:", result)
+
+      if (result.IsErroredOnProcessing) {
+        throw new Error(result.ErrorMessage?.[0] || "OCR processing failed")
+      }
+
+      if (!result.ParsedResults || result.ParsedResults.length === 0) {
+        throw new Error("No text detected in image")
+      }
+
+      const text = result.ParsedResults[0].ParsedText
+      console.log("[v0] OCR Text extracted:", text)
+
+      // Extract data using improved patterns
+      const extractedData = this.extractIdData(text, side)
+      return extractedData
+    } catch (error) {
+      console.error("[v0] OCR.space API failed, falling back to Tesseract.js:", error)
+      // Fallback to Tesseract.js if OCR.space fails
+      return await this.processWithTesseract(base64Image, side)
+    }
+  }
+
+  private static async processWithTesseract(base64Image: string, side: "front" | "back"): Promise<IdCardResult> {
+    console.log("[v0] Using Tesseract.js fallback...")
+
     const img = new Image()
-    img.src = `data:image/jpeg;base64,${base64Image}`
+    img.src = base64Image
 
     return new Promise((resolve, reject) => {
       img.onload = async () => {
         try {
-          // Create canvas for image processing
           const canvas = document.createElement("canvas")
           const ctx = canvas.getContext("2d")!
 
@@ -54,10 +100,8 @@ export class IdCardDetector {
           canvas.height = img.height
           ctx.drawImage(img, 0, 0)
 
-          // Enhance image for better OCR
           this.enhanceImageForOCR(ctx, canvas.width, canvas.height)
 
-          // Convert back to blob for Tesseract
           canvas.toBlob(
             async (blob) => {
               if (!blob) {
@@ -65,7 +109,6 @@ export class IdCardDetector {
                 return
               }
 
-              // Use Tesseract for OCR
               const Tesseract = (await import("tesseract.js")).default
 
               const {
@@ -78,9 +121,7 @@ export class IdCardDetector {
                 },
               })
 
-              console.log("[v0] OCR Text extracted:", text)
-
-              // Extract data based on side
+              console.log("[v0] Tesseract OCR Text:", text)
               const result = this.extractIdData(text, side)
               resolve(result)
             },
@@ -100,17 +141,13 @@ export class IdCardDetector {
     const imageData = ctx.getImageData(0, 0, width, height)
     const data = imageData.data
 
-    // Convert to grayscale and enhance contrast
     for (let i = 0; i < data.length; i += 4) {
       const gray = Math.round(0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2])
-
-      // Enhance contrast
       const enhanced = gray > 128 ? Math.min(255, gray * 1.2) : Math.max(0, gray * 0.8)
 
-      data[i] = enhanced // Red
-      data[i + 1] = enhanced // Green
-      data[i + 2] = enhanced // Blue
-      // Alpha stays the same
+      data[i] = enhanced
+      data[i + 1] = enhanced
+      data[i + 2] = enhanced
     }
 
     ctx.putImageData(imageData, 0, 0)
@@ -124,136 +161,112 @@ export class IdCardDetector {
 
     let name = ""
     let id_number = ""
-    let confidence = 50 // Base confidence
+    let confidence = 60 // Higher base confidence with better OCR
 
-    console.log("[v0] Processing lines:", lines)
+    console.log("[v0] Processing OCR lines:", lines)
 
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i]
-      const nextLine = i + 1 < lines.length ? lines[i + 1] : ""
-      const nextNextLine = i + 2 < lines.length ? lines[i + 2] : ""
+    // Extract ID number - look for 7-8 digit sequences
+    const fullText = text.replace(/\s+/g, " ")
 
-      // Extract ID number - various formats including Bolivian patterns
-      const idPatterns = [
-        /N[°º]?\s*(\d{7,8})/i, // N° 3219973
-        /\b(\d{7,8})\b/, // Direct 7-8 digit numbers
-        /CI[:\s]*(\d{7,8})/i, // CI: 1234567
-        /CEDULA[:\s]*(\d{7,8})/i, // CEDULA: 1234567
-        /(\d{4,5}-\d{1,2}-\d{1,2})/, // 12345-12-12 format
-      ]
+    // Pattern 1: Look for explicit ID patterns
+    const idPatterns = [
+      /(?:N[°º]?|CI|CEDULA|IDENTIDAD)[:\s]*(\d{7,8})/gi,
+      /\b(\d{7,8})\b/g, // Any standalone 7-8 digit number
+    ]
 
-      for (const pattern of idPatterns) {
-        const match = line.match(pattern)
-        if (match && !id_number) {
-          id_number = match[1]
+    for (const pattern of idPatterns) {
+      const matches = fullText.matchAll(pattern)
+      for (const match of matches) {
+        const extracted = match[1].replace(/\D/g, "")
+        if (extracted.length >= 7 && extracted.length <= 8 && !id_number) {
+          id_number = extracted
           confidence += 20
           console.log("[v0] Found ID number:", id_number)
           break
         }
       }
+      if (id_number) break
+    }
 
-      // Enhanced name extraction for both sides
-      if (side === "front") {
-        // Look for "NOMBRES:" pattern
-        if (line.match(/NOMBRES?:/i) && nextLine) {
-          const firstName = nextLine
-            .replace(/^[^A-Za-záéíóúñÁÉÍÓÚÑ]*/, "") // Remove leading non-letter characters
-            .replace(/[^A-Za-záéíóúñÁÉÍÓÚÑ\s]/g, "") // Remove all non-letter characters except spaces
-            .trim()
+    // Extract name based on side
+    if (side === "front") {
+      // Look for NOMBRES and APELLIDOS patterns
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i]
+        const nextLine = i + 1 < lines.length ? lines[i + 1] : ""
 
+        if (/NOMBRES?/i.test(line) && nextLine) {
+          const firstName = nextLine.replace(/[^A-Za-záéíóúñÁÉÍÓÚÑ\s]/g, "").trim()
           if (firstName.length > 2) {
             name = firstName
-            confidence += 25
-            console.log("[v0] Found first name after NOMBRES:", firstName)
-          }
-        }
-
-        // Look for "APELLIDOS:" pattern and combine with existing name
-        if (line.match(/APELLIDOS?:/i) && nextLine) {
-          const lastName = nextLine
-            .replace(/^[^A-Za-záéíóúñÁÉÍÓÚÑ]*/, "") // Remove leading non-letter characters
-            .replace(/[^A-Za-záéíóúñÁÉÍÓÚÑ\s]/g, "") // Remove all non-letter characters except spaces
-            .trim()
-
-          if (lastName.length > 2) {
-            if (name) {
-              name = `${name} ${lastName}`
-            } else {
-              name = lastName
-            }
-            confidence += 25
-            console.log("[v0] Found last name after APELLIDOS:", lastName)
-          }
-        }
-
-        // Look for direct name patterns (fallback)
-        if (!name && line.match(/^[A-ZÁÉÍÓÚÑ\s]{6,}$/) && line.split(" ").length >= 2) {
-          const skipWords = [
-            "ESTADO",
-            "PLURINACIONAL",
-            "BOLIVIA",
-            "CEDULA",
-            "IDENTIDAD",
-            "SERVICIO",
-            "GENERAL",
-            "IDENTIFICACION",
-            "PERSONAL",
-          ]
-          if (!skipWords.some((word) => line.includes(word))) {
-            name = line.trim()
             confidence += 15
-            console.log("[v0] Found direct name pattern:", name)
+            console.log("[v0] Found first name:", firstName)
           }
         }
-      } else if (side === "back") {
-        // Look for "A:" pattern which indicates name on back side
-        if (line.match(/^A:\s*/i) && line.length > 3) {
+
+        if (/APELLIDOS?/i.test(line) && nextLine) {
+          const lastName = nextLine.replace(/[^A-Za-záéíóúñÁÉÍÓÚÑ\s]/g, "").trim()
+          if (lastName.length > 2) {
+            name = name ? `${name} ${lastName}` : lastName
+            confidence += 15
+            console.log("[v0] Found last name:", lastName)
+          }
+        }
+      }
+
+      // Fallback: Look for capitalized name sequences
+      if (!name) {
+        for (const line of lines) {
+          const capitalizedWords = line.match(/\b[A-ZÁÉÍÓÚÑ][a-záéíóúñ]{2,}\b/g)
+          if (capitalizedWords && capitalizedWords.length >= 2 && capitalizedWords.length <= 4) {
+            const potentialName = capitalizedWords.join(" ")
+            const skipWords = ["Estado", "Plurinacional", "Bolivia", "Cedula", "Identidad", "Servicio"]
+            const hasSkipWord = skipWords.some((word) => potentialName.includes(word))
+            if (!hasSkipWord && potentialName.length >= 8) {
+              name = potentialName
+              confidence += 10
+              console.log("[v0] Found name from capitalized words:", potentialName)
+              break
+            }
+          }
+        }
+      }
+    } else if (side === "back") {
+      // Look for "A:" pattern or full name in caps
+      for (const line of lines) {
+        if (/^A:\s*/i.test(line)) {
           const extractedName = line
             .replace(/^A:\s*/i, "")
             .replace(/[^A-Za-záéíóúñÁÉÍÓÚÑ\s]/g, "")
             .trim()
           if (extractedName.length > 5 && extractedName.split(" ").length >= 2) {
-            name = extractedName.toUpperCase()
-            confidence += 30
-            console.log("[v0] Found name after A: pattern:", name)
-          }
-        }
-
-        // Look for names in lines that contain full names (usually 2-4 words)
-        if (
-          !name &&
-          line.match(/^[A-Za-záéíóúñÁÉÍÓÚÑ\s]{10,}$/) &&
-          line.split(" ").length >= 2 &&
-          line.split(" ").length <= 4
-        ) {
-          const skipWords = ["SERVICIO", "IDENTIFICACION", "PERSONAL", "CERTIFIC", "IMPRESION", "PERTENECE"]
-          if (!skipWords.some((word) => line.toUpperCase().includes(word))) {
-            name = line.toUpperCase().trim()
+            name = extractedName
             confidence += 20
-            console.log("[v0] Found full name pattern on back:", name)
+            console.log("[v0] Found name after A: pattern:", extractedName)
+            break
           }
         }
 
-        // Look for MRZ format names (Machine Readable Zone)
-        if (line.includes("<<") && line.includes("<")) {
-          const mrzMatch = line.match(/([A-Z]+)<+([A-Z]+)<+([A-Z]*)<*/)
-          if (mrzMatch) {
-            const lastName = mrzMatch[1]
-            const firstName = mrzMatch[2]
-            if (lastName && firstName) {
-              name = `${firstName} ${lastName}`
-              confidence += 25
-              console.log("[v0] Found MRZ name:", name)
+        if (!name && /^[A-ZÁÉÍÓÚÑ\s]{10,}$/.test(line)) {
+          const words = line.trim().split(/\s+/)
+          if (words.length >= 2 && words.length <= 4) {
+            const skipWords = ["SERVICIO", "IDENTIFICACION", "PERSONAL", "CERTIFIC"]
+            const hasSkipWord = skipWords.some((word) => line.includes(word))
+            if (!hasSkipWord) {
+              name = line.trim()
+              confidence += 15
+              console.log("[v0] Found full name on back:", line)
+              break
             }
           }
         }
       }
     }
 
+    // Purify and validate data
     const purifiedData = this.purifyExtractedData({ name, id_number, confidence, side })
 
     console.log("[v0] Final extracted data:", purifiedData)
-
     return purifiedData
   }
 
@@ -264,21 +277,15 @@ export class IdCardDetector {
 
     // Purify name
     if (name) {
-      // Remove common OCR artifacts and document labels
       const invalidNames = [
         "FECHA DE NACIMIENTO",
         "FECHA DE EMISION",
-        "FECHA DE EXPIRACION",
         "SERVICIO GENERAL",
         "IDENTIFICACION PERSONAL",
         "ESTADO PLURINACIONAL",
-        "BOLIVIA CEDULA",
         "CEDULA DE IDENTIDAD",
-        "SERIE SECCION",
-        "INDEFINIDO",
       ]
 
-      // Check if the extracted "name" is actually a document label
       const isInvalidName = invalidNames.some((invalid) => name.toUpperCase().includes(invalid))
 
       if (isInvalidName) {
@@ -286,93 +293,31 @@ export class IdCardDetector {
         name = ""
         confidence -= 30
       } else {
-        // Clean up the name
         name = name
-          .replace(/[^A-Za-záéíóúñÁÉÍÓÚÑ\s]/g, "") // Remove non-letter characters
-          .replace(/\s+/g, " ") // Normalize spaces
+          .replace(/[^A-Za-záéíóúñÁÉÍÓÚÑ\s]/g, "")
+          .replace(/\s+/g, " ")
           .trim()
 
-        const ocrArtifacts = [
-          /^(IS|ES|AS|OS|US|EN|AN|ON|UN|IN|AL|EL|IL|OL|UL)\s+/i, // Common OCR misreads at start
-          /\s+(IS|ES|AS|OS|US|EN|AN|ON|UN|IN|AL|EL|IL|OL|UL)\s+/gi, // OCR artifacts in middle
-          /\s+(IS|ES|AS|OS|US|EN|AN|ON|UN|IN|AL|EL|IL|OL|UL)$/i, // OCR artifacts at end
-        ]
-
-        for (const artifact of ocrArtifacts) {
-          name = name.replace(artifact, " ")
-        }
-
-        // Split into words, filter out invalid words, then rejoin
-        name = name
-          .split(/\s+/)
-          .filter((word) => {
-            // Remove single letters
-            if (word.length <= 1) return false
-
-            const commonArtifacts = [
-              "IS",
-              "ES",
-              "AS",
-              "OS",
-              "US",
-              "EN",
-              "AN",
-              "ON",
-              "UN",
-              "IN",
-              "AL",
-              "EL",
-              "IL",
-              "OL",
-              "UL",
-              "ER",
-              "AR",
-              "OR",
-              "UR",
-              "IR",
-            ]
-            if (commonArtifacts.includes(word.toUpperCase())) return false
-
-            const hasVowel = /[AEIOUÁÉÍÓÚÑ]/i.test(word)
-            if (!hasVowel && word.length < 4) return false // Short words without vowels are likely OCR errors
-
-            return true
-          })
-          .join(" ")
-
-        // Ensure minimum length for a valid name
         if (name.length < 3) {
-          console.log("[v0] Name too short after purification, discarding:", name)
+          console.log("[v0] Name too short, discarding:", name)
           name = ""
           confidence -= 20
         } else {
-          const words = name.split(" ")
-          const validWords = words.filter((word) => word.length >= 3 && /[AEIOUÁÉÍÓÚÑ]/i.test(word))
+          // Proper capitalization
+          name = name
+            .split(" ")
+            .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+            .join(" ")
 
-          if (validWords.length === 0) {
-            console.log("[v0] No valid name words found after purification:", name)
-            name = ""
-            confidence -= 25
-          } else {
-            // Proper capitalization
-            name = words
-              .map((word) => {
-                return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
-              })
-              .join(" ")
-
-            console.log("[v0] Purified name:", name)
-          }
+          console.log("[v0] Purified name:", name)
         }
       }
     }
 
     // Purify ID number
     if (id_number) {
-      // Clean ID number - only digits
       id_number = id_number.replace(/[^0-9]/g, "")
 
-      // Validate ID number length (Bolivian CI is typically 7-8 digits)
       if (id_number.length < 6 || id_number.length > 9) {
         console.log("[v0] Invalid ID number length:", id_number)
         id_number = ""
@@ -382,19 +327,16 @@ export class IdCardDetector {
       }
     }
 
-    // Adjust confidence based on data quality
+    // Adjust confidence
     if (name && id_number) {
-      confidence += 10 // Bonus for having both pieces of data
+      confidence += 10
     }
 
-    const purifiedResult = {
+    return {
       name,
       id_number,
-      confidence: Math.max(10, Math.min(confidence, 95)), // Keep between 10-95%
+      confidence: Math.max(20, Math.min(confidence, 95)),
       side,
     }
-
-    console.log("[v0] Data purification complete:", purifiedResult)
-    return purifiedResult
   }
 }

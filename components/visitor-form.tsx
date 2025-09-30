@@ -2,7 +2,7 @@
 
 import type React from "react"
 
-import { useState, useRef } from "react"
+import { useState, useRef, useEffect } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -11,22 +11,45 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Camera, Scan, Car, User, X, Loader2 } from "lucide-react"
-import { LocalStorageDB, type Visitor } from "@/lib/local-storage"
-import Tesseract from "tesseract.js"
+import { useToast } from "@/hooks/use-toast"
+import {
+  visitorService,
+  type VisitorFormData,
+  type VisitorCheckInRequest,
+  type Property,
+} from "@/services/visitorService"
 import { LocalVehicleAnalyzer } from "@/lib/vehicle-analyzer"
 import { IdCardDetector, type IdCardResult } from "@/lib/id-card-detector"
 
 interface VisitorFormProps {
   onClose: () => void
-  onSuccess: (visitor: Visitor) => void
+  onSuccess: () => void
 }
 
+const VISIT_REASONS = [
+  { value: "visita_social", label: "Visita Social" },
+  { value: "entrega", label: "Entrega/Delivery" },
+  { value: "servicio_tecnico", label: "Servicio Técnico" },
+  { value: "mantenimiento", label: "Mantenimiento" },
+  { value: "proveedor", label: "Proveedor" },
+  { value: "familiar", label: "Familiar" },
+  { value: "otro", label: "Otro" },
+]
+
+const VEHICLE_TYPES = [
+  { value: "light", display: "Vehículo Liviano" },
+  { value: "heavy", display: "Vehículo Pesado" },
+  { value: "motorcycle", display: "Motocicleta" },
+]
+
 export function VisitorForm({ onClose, onSuccess }: VisitorFormProps) {
+  const { toast } = useToast()
+
   const [formData, setFormData] = useState({
     name: "",
     id_number: "",
-    house_number: "",
-    host_name: "",
+    property_id: "",
+    common_area_id: "",
     visit_purpose: "",
     has_vehicle: false,
     license_plate: "",
@@ -35,6 +58,11 @@ export function VisitorForm({ onClose, onSuccess }: VisitorFormProps) {
     vehicle_type: "",
     notes: "",
   })
+
+  const [apiFormData, setApiFormData] = useState<VisitorFormData | null>(null)
+  const [properties, setProperties] = useState<Property[]>([])
+  const [isLoadingFormData, setIsLoadingFormData] = useState(true)
+  const [isSubmitting, setIsSubmitting] = useState(false)
 
   const [isScanning, setIsScanning] = useState(false)
   const [scanType, setScanType] = useState<"id" | "vehicle" | null>(null)
@@ -48,9 +76,44 @@ export function VisitorForm({ onClose, onSuccess }: VisitorFormProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
-  const houses = LocalStorageDB.getHouses()
-  const visitPurposes = LocalStorageDB.getVisitPurposes()
-  const vehicleTypes = LocalStorageDB.getVehicleTypes()
+  useEffect(() => {
+    loadFormData()
+  }, [])
+
+  const loadFormData = async () => {
+    setIsLoadingFormData(true)
+
+    const [formDataResponse, propertiesResponse] = await Promise.all([
+      visitorService.getFormData(),
+      visitorService.getProperties(),
+    ])
+
+    if (formDataResponse.success && formDataResponse.data) {
+      console.log("[v0] API Form Data received:", formDataResponse.data)
+      console.log("[v0] Visit reasons from API:", formDataResponse.data.reasons)
+      console.log("[v0] Vehicle types from API:", formDataResponse.data.vehicle_types)
+      setApiFormData(formDataResponse.data)
+    } else {
+      console.error("[v0] Failed to load form data:", formDataResponse.error)
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: formDataResponse.error || "Error al cargar datos del formulario",
+      })
+    }
+
+    if (propertiesResponse.success && propertiesResponse.data) {
+      setProperties(propertiesResponse.data)
+    } else {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: propertiesResponse.error || "Error al cargar propiedades",
+      })
+    }
+
+    setIsLoadingFormData(false)
+  }
 
   const handleInputChange = (field: string, value: string | boolean) => {
     setFormData((prev) => ({ ...prev, [field]: value }))
@@ -79,7 +142,11 @@ export function VisitorForm({ onClose, onSuccess }: VisitorFormProps) {
       }
     } catch (error) {
       console.error("Error accessing camera:", error)
-      alert("No se pudo acceder a la cámara. Por favor, ingrese los datos manualmente.")
+      toast({
+        variant: "destructive",
+        title: "Error de cámara",
+        description: "No se pudo acceder a la cámara. Por favor, ingrese los datos manualmente.",
+      })
       setIsScanning(false)
       setIdCardSide(null)
     }
@@ -148,15 +215,13 @@ export function VisitorForm({ onClose, onSuccess }: VisitorFormProps) {
 
   const processVehicleWithLocalAnalysis = async (imageBlob: Blob) => {
     setIsProcessingOCR(true)
-    setOcrProgress("Cargando modelos de IA...")
+    setOcrProgress("Analizando vehículo...")
 
     try {
       const analyzer = new LocalVehicleAnalyzer()
 
-      setOcrProgress("Cargando TensorFlow.js y detector de placas...")
+      setOcrProgress("Detectando placa y color del vehículo...")
       const result = await analyzer.analyzeVehicle(imageBlob)
-
-      console.log("[v0] Real Vehicle Analysis Result:", result)
 
       if (result.license_plate || result.vehicle_color || result.vehicle_type || result.vehicle_model) {
         setFormData((prev) => ({
@@ -173,19 +238,26 @@ export function VisitorForm({ onClose, onSuccess }: VisitorFormProps) {
         if (result.vehicle_type) foundItems.push("tipo")
         if (result.vehicle_model) foundItems.push("modelo")
 
-        alert(
-          `¡Análisis completado con IA especializada! Se detectó: ${foundItems.join(", ")} (Confianza: ${result.confidence}/10)`,
-        )
+        toast({
+          title: "¡Análisis completado!",
+          description: `Se detectó: ${foundItems.join(", ")} (Confianza: ${result.confidence}%)`,
+        })
       } else {
-        alert("No se pudieron extraer datos del vehículo. Intente con mejor iluminación o ángulo.")
+        toast({
+          variant: "destructive",
+          title: "No se detectaron datos",
+          description: "No se pudieron extraer datos del vehículo. Intente con mejor iluminación o ángulo.",
+        })
       }
 
       await analyzer.cleanup()
     } catch (error) {
-      console.error("Real Vehicle Analysis Error:", error)
-      alert(
-        `Error en el análisis con IA: ${(error as Error).message}. Intente de nuevo o ingrese los datos manualmente.`,
-      )
+      console.error("Vehicle Analysis Error:", error)
+      toast({
+        variant: "destructive",
+        title: "Error en el análisis",
+        description: `${(error as Error).message}. Intente de nuevo o ingrese los datos manualmente.`,
+      })
     } finally {
       setIsProcessingOCR(false)
       setOcrProgress("")
@@ -195,12 +267,10 @@ export function VisitorForm({ onClose, onSuccess }: VisitorFormProps) {
 
   const processIdCard = async (imageBlob: Blob, side: "front" | "back") => {
     setIsProcessingOCR(true)
-    setOcrProgress(`Procesando ${side === "front" ? "anverso" : "reverso"} de la cédula...`)
+    setOcrProgress(`Procesando ${side === "front" ? "anverso" : "reverso"} de la cédula con OCR profesional...`)
 
     try {
       const result = await IdCardDetector.detectIdCard(imageBlob, side)
-
-      console.log(`[v0] ID Card ${side} Result:`, result)
 
       const newCapturedData = {
         ...capturedIdData,
@@ -221,17 +291,24 @@ export function VisitorForm({ onClose, onSuccess }: VisitorFormProps) {
         if (combinedData.name) capturedItems.push("nombre")
         if (combinedData.id_number) capturedItems.push("cédula")
 
-        alert(
-          `¡${side === "front" ? "Anverso" : "reverso"} procesado! Se detectó: ${capturedItems.join(", ")} (Confianza: ${result.confidence}%)`,
-        )
+        toast({
+          title: `¡${side === "front" ? "Anverso" : "Reverso"} procesado!`,
+          description: `Se detectó: ${capturedItems.join(", ")} (Confianza: ${result.confidence}%)`,
+        })
       } else {
-        alert(
-          `No se pudieron extraer datos del ${side === "front" ? "anverso" : "reverso"}. Intente con mejor iluminación o ángulo.`,
-        )
+        toast({
+          variant: "destructive",
+          title: "No se detectaron datos",
+          description: `No se pudieron extraer datos del ${side === "front" ? "anverso" : "reverso"}. Intente con mejor iluminación o ángulo.`,
+        })
       }
     } catch (error) {
       console.error(`ID Card ${side} Processing Error:`, error)
-      alert(`Error al procesar el ${side === "front" ? "anverso" : "reverso"}: ${(error as Error).message}`)
+      toast({
+        variant: "destructive",
+        title: "Error al procesar",
+        description: `Error al procesar el ${side === "front" ? "anverso" : "reverso"}: ${(error as Error).message}`,
+      })
     } finally {
       setIsProcessingOCR(false)
       setOcrProgress("")
@@ -245,16 +322,13 @@ export function VisitorForm({ onClose, onSuccess }: VisitorFormProps) {
     let bestName = ""
     let bestIdNumber = ""
 
-    // Combine names - prefer the one with higher confidence and more complete data
     if (front?.name && back?.name) {
-      // If both sides have names, choose the one with higher confidence
       if (front.confidence >= back.confidence) {
         bestName = front.name
       } else {
         bestName = back.name
       }
 
-      // If one name is clearly more complete (more words), prefer that one
       const frontWords = front.name.split(" ").length
       const backWords = back.name.split(" ").length
 
@@ -269,7 +343,6 @@ export function VisitorForm({ onClose, onSuccess }: VisitorFormProps) {
       bestName = back.name
     }
 
-    // Combine ID numbers - prefer the one with higher confidence
     if (front?.id_number && back?.id_number) {
       if (front.confidence >= back.confidence) {
         bestIdNumber = front.id_number
@@ -282,118 +355,86 @@ export function VisitorForm({ onClose, onSuccess }: VisitorFormProps) {
       bestIdNumber = back.id_number
     }
 
-    console.log("[v0] Combined ID data:", { name: bestName, id_number: bestIdNumber })
-
     return {
       name: bestName,
       id_number: bestIdNumber,
     }
   }
 
-  const processWithTesseract = async (imageBlob: Blob, type: "id" | "vehicle") => {
-    setIsProcessingOCR(true)
-    setOcrProgress("Procesando imagen...")
-
-    try {
-      const {
-        data: { text },
-      } = await Tesseract.recognize(imageBlob, "spa+eng", {
-        logger: (m) => {
-          if (m.status === "recognizing text") {
-            setOcrProgress(`Procesando... ${Math.round(m.progress * 100)}%`)
-          }
-        },
-      })
-
-      console.log("[v0] OCR Result:", text)
-
-      if (type === "id") {
-        const processedIdData = extractIdData(text)
-
-        if (processedIdData.name || processedIdData.id_number) {
-          setFormData((prev) => ({
-            ...prev,
-            name: processedIdData.name || prev.name,
-            id_number: processedIdData.id_number || prev.id_number,
-          }))
-          alert("¡Datos de cédula escaneados exitosamente!")
-        } else {
-          alert("No se pudieron extraer datos de la cédula. Por favor, intente de nuevo o ingrese manualmente.")
-        }
-      }
-    } catch (error) {
-      console.error("OCR Error:", error)
-      alert("Error al procesar la imagen. Por favor, intente de nuevo o ingrese los datos manualmente.")
-    } finally {
-      setIsProcessingOCR(false)
-      setOcrProgress("")
-      stopCamera()
-    }
-  }
-
-  const extractIdData = (text: string) => {
-    const lines = text
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0)
-
-    let name = ""
-    let id_number = ""
-
-    for (const line of lines) {
-      const idMatch = line.match(/\b(\d{7,8}[A-Z]?|\d{4,5}-\d{1,2}-\d{1,2}|\d{8,10})\b/)
-      if (idMatch && !id_number) {
-        id_number = idMatch[1]
-      }
-
-      if (line.match(/^[A-ZÁÉÍÓÚÑ\s]{10,}$/) && !name) {
-        name = line
-      }
-    }
-
-    return { name, id_number }
-  }
-
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
 
-    if (!formData.name || !formData.id_number || !formData.visit_purpose) {
-      alert("Por favor, complete todos los campos obligatorios.")
+    if (!formData.name || !formData.visit_purpose) {
+      toast({
+        variant: "destructive",
+        title: "Campos incompletos",
+        description: "Por favor, complete todos los campos obligatorios.",
+      })
       return
     }
 
-    const selectedHouse = houses.find((h) => h.number === formData.house_number)
+    if (!formData.property_id && !formData.common_area_id) {
+      toast({
+        variant: "destructive",
+        title: "Destino requerido",
+        description: "Por favor, seleccione una casa o área común a visitar.",
+      })
+      return
+    }
 
-    const visitorData: Omit<Visitor, "id" | "created_at"> = {
-      name: formData.name,
-      id_number: formData.id_number,
-      house_number: formData.house_number || "N/A",
-      host_name:
-        formData.house_number === "areas_comunes"
-          ? "Áreas Comunes"
-          : formData.house_number
-            ? selectedHouse?.owner || "No especificado"
-            : "No especificado",
-      visit_purpose: formData.visit_purpose as any,
-      entry_time: new Date().toLocaleTimeString("es-ES", {
-        hour: "2-digit",
-        minute: "2-digit",
-      }),
-      status: "dentro",
+    setIsSubmitting(true)
+
+    const visitorData: VisitorCheckInRequest = {
+      full_name: formData.name,
+      document_id: formData.id_number || undefined,
+      reason: formData.visit_purpose,
+      property_to_visit: formData.property_id ? Number.parseInt(formData.property_id) : undefined,
+      common_area_to_visit: formData.common_area_id ? Number.parseInt(formData.common_area_id) : undefined,
+      observations: formData.notes || undefined,
       vehicle: formData.has_vehicle
         ? {
-            has_vehicle: true,
             license_plate: formData.license_plate,
             color: formData.vehicle_color,
             model: formData.vehicle_model,
-            type: formData.vehicle_type as any,
+            vehicle_type: formData.vehicle_type,
           }
-        : { has_vehicle: false },
-      notes: formData.notes || undefined,
+        : undefined,
     }
 
-    const savedVisitor = LocalStorageDB.saveVisitor(visitorData)
-    onSuccess(savedVisitor)
+    const response = await visitorService.checkIn(visitorData)
+
+    if (response.success) {
+      toast({
+        title: "¡Éxito!",
+        description: "Visitante registrado exitosamente",
+      })
+      onSuccess()
+    } else {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: response.error || "Error al registrar visitante",
+      })
+    }
+
+    setIsSubmitting(false)
+  }
+
+  const vehicleTypes =
+    apiFormData?.vehicle_types && apiFormData.vehicle_types.length > 0 ? apiFormData.vehicle_types : VEHICLE_TYPES
+
+  const visitReasons = apiFormData?.reasons && apiFormData.reasons.length > 0 ? apiFormData.reasons : VISIT_REASONS
+
+  if (isLoadingFormData) {
+    return (
+      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+        <Card className="w-full max-w-2xl">
+          <CardContent className="p-8 flex items-center justify-center">
+            <Loader2 className="w-8 h-8 animate-spin text-primary" />
+          </CardContent>
+        </Card>
+      </div>
+    )
   }
 
   return (
@@ -422,8 +463,8 @@ export function VisitorForm({ onClose, onSuccess }: VisitorFormProps) {
                       <p className="font-medium">{ocrProgress || "Procesando imagen..."}</p>
                       <p className="text-sm opacity-75">
                         {scanType === "vehicle"
-                          ? "Usando TensorFlow.js + Detector de Placas Especializado"
-                          : "Esto puede tomar unos segundos"}
+                          ? "Usando detector de placas especializado y análisis de color"
+                          : "Usando OCR.space API profesional para reconocimiento de cédulas"}
                       </p>
                     </div>
                   </div>
@@ -451,8 +492,8 @@ export function VisitorForm({ onClose, onSuccess }: VisitorFormProps) {
 
               <p className="text-xs text-muted-foreground text-center">
                 {scanType === "vehicle"
-                  ? "Usando TensorFlow.js COCO-SSD para detección + Detector de Placas Especializado"
-                  : "Usando Tesseract.js para reconocimiento óptico de caracteres"}
+                  ? "Usando detector de placas especializado y análisis de color"
+                  : "Usando OCR.space API profesional para reconocimiento de cédulas"}
               </p>
             </div>
           )}
@@ -511,7 +552,7 @@ export function VisitorForm({ onClose, onSuccess }: VisitorFormProps) {
                     />
                   </div>
                   <div>
-                    <Label htmlFor="id_number">Cédula/CI *</Label>
+                    <Label htmlFor="id_number">Cédula/CI</Label>
                     <Input
                       id="id_number"
                       value={formData.id_number}
@@ -528,19 +569,21 @@ export function VisitorForm({ onClose, onSuccess }: VisitorFormProps) {
 
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <Label htmlFor="house_number">Casa a Visitar</Label>
+                    <Label htmlFor="property_id">Casa a Visitar</Label>
                     <Select
-                      value={formData.house_number}
-                      onValueChange={(value) => handleInputChange("house_number", value)}
+                      value={formData.property_id}
+                      onValueChange={(value) => {
+                        handleInputChange("property_id", value)
+                        handleInputChange("common_area_id", "")
+                      }}
                     >
                       <SelectTrigger>
-                        <SelectValue placeholder="Seleccionar casa (opcional)" />
+                        <SelectValue placeholder="Seleccionar casa" />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="areas_comunes">Áreas Comunes</SelectItem>
-                        {houses.map((house) => (
-                          <SelectItem key={house.number} value={house.number}>
-                            Casa {house.number} - {house.owner}
+                        {properties.map((property) => (
+                          <SelectItem key={property.id} value={property.id.toString()}>
+                            Casa {property.house_number} - {property.owner_name}
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -548,23 +591,45 @@ export function VisitorForm({ onClose, onSuccess }: VisitorFormProps) {
                   </div>
 
                   <div>
-                    <Label htmlFor="visit_purpose">Motivo de Visita *</Label>
+                    <Label htmlFor="common_area_id">Área Común</Label>
                     <Select
-                      value={formData.visit_purpose}
-                      onValueChange={(value) => handleInputChange("visit_purpose", value)}
+                      value={formData.common_area_id}
+                      onValueChange={(value) => {
+                        handleInputChange("common_area_id", value)
+                        handleInputChange("property_id", "")
+                      }}
                     >
                       <SelectTrigger>
-                        <SelectValue placeholder="Seleccionar motivo" />
+                        <SelectValue placeholder="Seleccionar área común" />
                       </SelectTrigger>
                       <SelectContent>
-                        {visitPurposes.map((purpose) => (
-                          <SelectItem key={purpose.value} value={purpose.value}>
-                            {purpose.label}
+                        {apiFormData?.common_areas.map((area) => (
+                          <SelectItem key={area.id} value={area.id.toString()}>
+                            {area.name}
                           </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
                   </div>
+                </div>
+
+                <div>
+                  <Label htmlFor="visit_purpose">Motivo de Visita *</Label>
+                  <Select
+                    value={formData.visit_purpose}
+                    onValueChange={(value) => handleInputChange("visit_purpose", value)}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Seleccionar motivo" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {visitReasons.map((reason) => (
+                        <SelectItem key={reason.value} value={reason.value}>
+                          {(reason as any).display || (reason as any).label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
 
@@ -632,7 +697,7 @@ export function VisitorForm({ onClose, onSuccess }: VisitorFormProps) {
                         <SelectContent>
                           {vehicleTypes.map((type) => (
                             <SelectItem key={type.value} value={type.value}>
-                              {type.label}
+                              {type.display}
                             </SelectItem>
                           ))}
                         </SelectContent>
@@ -656,10 +721,17 @@ export function VisitorForm({ onClose, onSuccess }: VisitorFormProps) {
 
               {/* Submit Buttons */}
               <div className="flex gap-2 pt-4">
-                <Button type="submit" className="flex-1">
-                  Registrar Visitante
+                <Button type="submit" className="flex-1" disabled={isSubmitting}>
+                  {isSubmitting ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Registrando...
+                    </>
+                  ) : (
+                    "Registrar Visitante"
+                  )}
                 </Button>
-                <Button type="button" variant="outline" onClick={onClose}>
+                <Button type="button" variant="outline" onClick={onClose} disabled={isSubmitting}>
                   Cancelar
                 </Button>
               </div>

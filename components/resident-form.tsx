@@ -425,6 +425,13 @@ export function ResidentForm({ editingResident, onClose, onSuccess }: ResidentFo
                     src={faceImage || "/placeholder.svg"}
                     alt="Rostro capturado"
                     className="w-32 h-32 rounded-lg object-cover"
+                    onError={(e) => {
+                      console.log("[v0] Error loading captured face image")
+                      e.currentTarget.style.display = "none"
+                    }}
+                    onLoad={() => {
+                      console.log("[v0] Captured face image loaded successfully")
+                    }}
                   />
                 </div>
               )}

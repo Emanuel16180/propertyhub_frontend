@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { Users, Search, Building, User, Mail, Phone, Calendar, Home, Loader2 } from "lucide-react"
 import { residentService, type ApiResident } from "@/services/residentService"
+import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar"
 
 interface ResidentsListProps {
   onEditResident?: (resident: ApiResident) => void
@@ -153,15 +154,16 @@ export function ResidentsList({ onEditResident }: ResidentsListProps) {
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-4">
                         <div className="w-14 h-14 rounded-full overflow-hidden bg-muted flex items-center justify-center flex-shrink-0">
-                          {resident.profile.resident_info.face_photo ? (
-                            <img
+                          <Avatar className="w-14 h-14">
+                            <AvatarImage
                               src={resident.profile.resident_info.face_photo || "/placeholder.svg"}
                               alt={`${resident.first_name} ${resident.last_name}`}
-                              className="w-14 h-14 rounded-full object-cover"
+                              className="object-cover"
                             />
-                          ) : (
-                            <Users className="w-7 h-7 text-muted-foreground" />
-                          )}
+                            <AvatarFallback className="bg-muted">
+                              <Users className="w-7 h-7 text-muted-foreground" />
+                            </AvatarFallback>
+                          </Avatar>
                         </div>
 
                         <div className="space-y-1 min-w-0 flex-1">
@@ -224,17 +226,16 @@ export function ResidentsList({ onEditResident }: ResidentsListProps) {
                             </DialogHeader>
                             <div className="space-y-4 py-4">
                               <div className="flex items-center gap-4 pb-4 border-b">
-                                <div className="w-16 h-16 rounded-full bg-muted flex items-center justify-center">
-                                  {resident.profile.resident_info.face_photo ? (
-                                    <img
-                                      src={resident.profile.resident_info.face_photo || "/placeholder.svg"}
-                                      alt={`${resident.first_name} ${resident.last_name}`}
-                                      className="w-16 h-16 rounded-full object-cover"
-                                    />
-                                  ) : (
+                                <Avatar className="w-16 h-16">
+                                  <AvatarImage
+                                    src={resident.profile.resident_info.face_photo || "/placeholder.svg"}
+                                    alt={`${resident.first_name} ${resident.last_name}`}
+                                    className="object-cover"
+                                  />
+                                  <AvatarFallback className="bg-muted">
                                     <Users className="w-8 h-8 text-muted-foreground" />
-                                  )}
-                                </div>
+                                  </AvatarFallback>
+                                </Avatar>
                                 <div>
                                   <h3 className="font-semibold text-lg">
                                     {resident.first_name} {resident.last_name}
